@@ -1,0 +1,11 @@
+<?php
+
+return [
+    'db_host' => '127.0.0.1',
+    'db_name' => 'recru',
+    'db_user' => 'recru_user',
+    'db_pass' => 'change-this-password',
+    'app_name' => 'KDXJobs',
+    'app_email_from' => 'no-reply@example.com',
+    'app_email_reply_to' => 'support@example.com',
+];
