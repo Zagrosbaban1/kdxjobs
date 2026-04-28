@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS users (
   cv_ai_summary TEXT NULL,
   cv_ai_updated_at TIMESTAMP NULL DEFAULT NULL,
   logo_file VARCHAR(255) NULL,
+  profile_photo VARCHAR(255) NULL,
   status ENUM('active', 'blocked') NOT NULL DEFAULT 'active',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -29,6 +30,7 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS cv_ai_skills TEXT NULL AFTER cv_text;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS cv_ai_years INT NULL AFTER cv_ai_skills;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS cv_ai_summary TEXT NULL AFTER cv_ai_years;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS cv_ai_updated_at TIMESTAMP NULL DEFAULT NULL AFTER cv_ai_summary;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_photo VARCHAR(255) NULL AFTER logo_file;
 
 CREATE TABLE IF NOT EXISTS companies (
   id INT AUTO_INCREMENT PRIMARY KEY,

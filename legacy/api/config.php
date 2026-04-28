@@ -238,7 +238,7 @@ function upload_file(string $field, array $allowedExtensions, ?int $maxBytes = n
     $maxBytes ??= MAX_UPLOAD_BYTES;
     $size = (int) ($_FILES[$field]['size'] ?? 0);
     if ($size <= 0 || $size > $maxBytes) {
-        throw new RuntimeException('Uploaded file is too large. CV files must be 2 MB or smaller.');
+        throw new RuntimeException('Uploaded file is too large. Please choose a smaller file.');
     }
 
     $extension = strtolower(pathinfo($_FILES[$field]['name'], PATHINFO_EXTENSION));

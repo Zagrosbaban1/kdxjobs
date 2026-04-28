@@ -21,6 +21,7 @@ return new class extends Migration
             $table->string('location', 180)->nullable();
             $table->string('cv_file', 255)->nullable();
             $table->string('logo_file', 255)->nullable();
+            $table->string('profile_photo', 255)->nullable();
             $table->enum('status', ['active', 'blocked'])->default('active');
             $table->timestamp('created_at')->useCurrent();
         });

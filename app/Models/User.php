@@ -34,6 +34,7 @@ class User extends Authenticatable
         'location',
         'cv_file',
         'logo_file',
+        'profile_photo',
         'status',
     ];
 

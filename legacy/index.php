@@ -200,6 +200,18 @@ function cv_link_html(?string $path, string $label = 'View CV'): string
     return '<a class="file-link" href="' . h(download_url($path)) . '" target="_blank" rel="noopener">' . h($label) . '</a>';
 }
 
+function profile_photo_html(?string $path, string $name, string $class = 'profile-photo'): string
+{
+    $path = trim((string) $path);
+    $initial = strtoupper(substr(trim($name) !== '' ? trim($name) : 'U', 0, 1));
+
+    if ($path === '') {
+        return '<span class="' . h($class) . ' profile-photo-fallback">' . h($initial) . '</span>';
+    }
+
+    return '<img class="' . h($class) . '" src="' . h(download_url($path)) . '" alt="' . h($name !== '' ? $name . ' profile photo' : 'Profile photo') . '">';
+}
+
 function validate_password_strength(string $password): void
 {
     if (strlen($password) < 10) {
@@ -226,7 +238,7 @@ function can_access_uploaded_file(PDO $pdo, string $path): bool
     $userId = (int) $_SESSION['user']['id'];
     $role = (string) ($_SESSION['user']['role'] ?? '');
 
-    $userStmt = $pdo->prepare('SELECT id FROM users WHERE id = :id AND (cv_file = :path OR logo_file = :path) LIMIT 1');
+    $userStmt = $pdo->prepare('SELECT id FROM users WHERE id = :id AND (cv_file = :path OR logo_file = :path OR profile_photo = :path) LIMIT 1');
     $userStmt->execute([':id' => $userId, ':path' => $path]);
     if ($userStmt->fetchColumn()) {
         return true;
@@ -769,6 +781,7 @@ try {
     $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS cv_ai_summary TEXT NULL AFTER cv_ai_years");
     $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS cv_ai_json JSON NULL AFTER cv_ai_summary");
     $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS cv_ai_updated_at TIMESTAMP NULL DEFAULT NULL AFTER cv_ai_summary");
+    $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_photo VARCHAR(255) NULL AFTER logo_file");
     $pdo->exec("ALTER TABLE applications ADD COLUMN IF NOT EXISTS cv_ai_skills TEXT NULL AFTER cv_file");
     $pdo->exec("ALTER TABLE applications ADD COLUMN IF NOT EXISTS cv_ai_years INT NULL AFTER cv_ai_skills");
     $pdo->exec("ALTER TABLE applications ADD COLUMN IF NOT EXISTS cv_ai_summary TEXT NULL AFTER cv_ai_years");
@@ -1719,11 +1732,13 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 ? implode(', ', array_values(array_filter(array_map('trim', $selectedSkills))))
                 : field('skills');
             $cvFile = $currentRole === 'jobseeker' ? upload_file('cv_file', ['pdf'], MAX_CV_UPLOAD_BYTES) : null;
+            $profilePhoto = upload_file('profile_photo', ['png', 'jpg', 'jpeg', 'webp'], 2 * 1024 * 1024);
             $cvScreen = $cvFile ? screen_cv($cvFile, $skillsValue) : null;
             $stmt = $pdo->prepare(
                 'UPDATE users
                  SET full_name = :full_name, company_name = :company_name, phone = :phone, skills = :skills,
                      industry = :industry, location = :location, cv_file = COALESCE(:cv_file, cv_file),
+                     profile_photo = COALESCE(:profile_photo, profile_photo),
                      cv_text = COALESCE(:cv_text, cv_text),
                      cv_ai_skills = COALESCE(:cv_ai_skills, cv_ai_skills),
                      cv_ai_years = COALESCE(:cv_ai_years, cv_ai_years),
@@ -1740,6 +1755,7 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':industry' => field('industry') ?: null,
                 ':location' => field('location') ?: null,
                 ':cv_file' => $cvFile,
+                ':profile_photo' => $profilePhoto,
                 ':cv_text' => $cvScreen['text'] ?? null,
                 ':cv_ai_skills' => $cvScreen['skills'] ?? null,
                 ':cv_ai_years' => $cvScreen['years'] ?? null,
@@ -2661,6 +2677,7 @@ function profile_score(array $user): int
         $user['skills'] ?? $user['industry'] ?? '',
         $user['location'] ?? '',
         $user['cv_file'] ?? $user['logo_file'] ?? '',
+        $user['profile_photo'] ?? '',
     ];
     $complete = 0;
     foreach ($fields as $value) {
@@ -4407,6 +4424,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
         .application-toolbar .search-inner span{display:inline-flex;align-items:center;justify-content:center;width:18px;font-size:0;line-height:1}
         .application-toolbar .search-inner span::before{content:"\1F50D";font-size:16px;line-height:1;color:#64748b}
         .application-toolbar .search-inner input{min-width:0;border:0;outline:none;box-shadow:none;background:transparent}
+        .profile-photo{display:inline-flex;align-items:center;justify-content:center;width:54px;height:54px;flex:0 0 auto;border:3px solid #e0f2fe;border-radius:999px;background:#f0f9ff;color:#0369a1;object-fit:cover;font-size:18px;font-weight:950;box-shadow:0 10px 24px rgba(14,165,233,.12)}.profile-photo-fallback{background:linear-gradient(135deg,#e0f2fe,#fff)}.profile-photo-large{width:92px;height:92px;font-size:32px;border-width:4px}.profile-header{display:flex;align-items:center;gap:18px;margin-bottom:22px;border:1px solid #e0f2fe;border-radius:22px;background:linear-gradient(135deg,#f8fbff,#fff);padding:18px}.profile-header p{margin:6px 0 0}.side-photo{width:54px;height:54px}
         .skill-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.skill-option{display:flex;align-items:center;gap:8px;border:1px solid #e0f2fe;border-radius:14px;background:#f8fafc;padding:10px 12px;font-weight:900;color:#334155}.skill-option input{width:auto}.score-bar{height:10px;border-radius:999px;background:#e2e8f0;overflow:hidden;margin-top:10px}.score-bar span{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#0ea5e9,#22c55e)}.file-link{color:#0369a1;font-weight:950}@media(max-width:800px){.skill-grid,.skills-dropdown-menu{grid-template-columns:1fr}}
         .skills-dropdown{position:relative}.skills-dropdown summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:52px;border:1px solid #e0f2fe;border-radius:16px;background:#fff;padding:13px 16px;color:#334155;cursor:pointer;list-style:none}.skills-dropdown summary::-webkit-details-marker{display:none}.skills-dropdown summary:after{content:"";width:8px;height:8px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(45deg);transition:.2s}.skills-dropdown[open] summary{border-color:#7dd3fc;box-shadow:0 0 0 4px #e0f2fe}.skills-dropdown[open] summary:after{transform:rotate(225deg)}.skills-dropdown-menu{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:10px;border:1px solid #e0f2fe;border-radius:16px;background:#fff;padding:12px;box-shadow:0 16px 36px rgba(15,23,42,.08)}
         .cv-upload{display:grid;grid-template-columns:auto 1fr;gap:14px;align-items:center;border:1px dashed #7dd3fc;border-radius:18px;background:linear-gradient(135deg,#f0f9ff,#fff);padding:16px 18px;transition:.2s}.cv-upload:hover{border-color:#0ea5e9;background:#e0f2fe;box-shadow:0 12px 26px rgba(14,165,233,.12)}.cv-upload-icon{display:inline-flex;align-items:center;justify-content:center;width:54px;height:54px;border-radius:16px;background:#0ea5e9;color:#fff;box-shadow:0 12px 22px rgba(14,165,233,.2)}.cv-upload-icon svg{width:30px;height:30px;fill:none;stroke:currentColor;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.cv-upload-copy{display:grid;gap:7px;min-width:0}.cv-upload-copy strong{font-size:16px;color:#0f172a}.cv-upload-copy span{color:#64748b;font-size:13px;font-weight:800}.cv-upload-input{width:100%;max-width:360px;border:1px solid #bae6fd;border-radius:12px;background:#fff;padding:10px;color:#334155;cursor:pointer}.cv-upload-file{display:inline-flex;width:max-content;max-width:100%;border-radius:999px;background:#e0f2fe;padding:5px 10px;color:#0369a1!important;font-size:12px!important;font-weight:950!important}
@@ -5436,13 +5454,14 @@ $tabTitle = $dashboardMenu[$tab] ?? ucfirst(str_replace('_', ' ', $tab));
 $availableSkills = skill_options();
 $chosenSkills = selected_skills($user['skills'] ?? '');
 $profileScore = $user ? profile_score($user) : 0;
+$displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? ($user['company_name'] ?? 'BlueTech') : ($user['full_name'] ?? 'Admin'));
 ?>
 <section class="section">
     <div class="wrap">
         <div class="dash-hero"><h2><?= h($title) ?></h2><p><?= h($subtitle) ?></p></div>
         <div class="dash-layout">
             <aside class="card side">
-                <div class="side-user"><span class="icon"><?= $isUser ? '👤' : ($isCompany ? '🏢' : '🛡️') ?></span><div><strong><?= h($isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? ($user['company_name'] ?? 'BlueTech') : ($user['full_name'] ?? 'Admin'))) ?></strong><br><span class="tiny muted"><?= $isUser ? 'Data Analyst' : ($isCompany ? 'Tech Company' : (is_super_admin() ? 'Super Admin' : 'Recruiter Admin')) ?></span></div></div>
+                <div class="side-user"><?= profile_photo_html($user['profile_photo'] ?? null, (string) $displayName, 'profile-photo side-photo') ?><div><strong><?= h((string) $displayName) ?></strong><br><span class="tiny muted"><?= $isUser ? 'Data Analyst' : ($isCompany ? 'Tech Company' : (is_super_admin() ? 'Super Admin' : 'Recruiter Admin')) ?></span></div></div>
                 <?php foreach ($dashboardMenu as $key => $item): ?>
                     <a class="side-btn <?= $tab === $key ? 'active' : '' ?>" href="<?= h(app_url($page, ['tab' => $key])) ?>">⚙️ <?= h($item) ?></a>
                 <?php endforeach; ?>
@@ -5476,6 +5495,13 @@ $profileScore = $user ? profile_score($user) : 0;
                         <?php if ($tab === 'manage' && !$isUser): ?><a class="btn" href="<?= h(app_url($page, ['tab' => 'settings'])) ?>">Edit</a><?php endif; ?>
                     </div>
                     <?php if ($tab === 'profile' && $isUser): ?>
+                        <div class="profile-header">
+                            <?= profile_photo_html($user['profile_photo'] ?? null, (string) $displayName, 'profile-photo profile-photo-large') ?>
+                            <div>
+                                <h3><?= h((string) $displayName) ?></h3>
+                                <p class="tiny muted">Profile photo and account details</p>
+                            </div>
+                        </div>
                         <div class="profile-grid">
                             <?php
                             $cvDisplay = !empty($user['cv_file'])
@@ -5491,12 +5517,26 @@ $profileScore = $user ? profile_score($user) : 0;
                             <?php endforeach; ?>
                         </div>
                     <?php elseif ($tab === 'profile' && $isCompany): ?>
+                        <div class="profile-header">
+                            <?= profile_photo_html($user['profile_photo'] ?? null, (string) $displayName, 'profile-photo profile-photo-large') ?>
+                            <div>
+                                <h3><?= h((string) $displayName) ?></h3>
+                                <p class="tiny muted">Company account profile</p>
+                            </div>
+                        </div>
                         <div class="profile-grid">
                             <?php foreach (['Company'=>$user['company_name'] ?? 'BlueTech','Email'=>$user['email'] ?? 'company@example.com','Phone'=>$user['phone'] ?? '+964 750 111 1111','Industry'=>$user['industry'] ?? 'Data & AI','Location'=>$user['location'] ?? 'Erbil, Iraq'] as $k=>$v): ?>
                             <div class="profile-box"><span class="tiny" style="color:#0369a1;font-weight:900"><?= h($k) ?></span><br><strong><?= h($v) ?></strong></div>
                             <?php endforeach; ?>
                         </div>
                     <?php elseif ($tab === 'profile'): ?>
+                        <div class="profile-header">
+                            <?= profile_photo_html($user['profile_photo'] ?? null, (string) $displayName, 'profile-photo profile-photo-large') ?>
+                            <div>
+                                <h3><?= h((string) $displayName) ?></h3>
+                                <p class="tiny muted">Admin account profile</p>
+                            </div>
+                        </div>
                         <div class="profile-grid">
                             <?php foreach (['Name'=>$user['full_name'] ?? 'Admin','Email'=>$user['email'] ?? 'admin@example.com','Role'=>is_super_admin() ? 'Super Admin' : 'Recruiter Admin','Status'=>$user['status'] ?? 'active'] as $k=>$v): ?>
                             <div class="profile-box"><span class="tiny" style="color:#0369a1;font-weight:900"><?= h($k) ?></span><br><strong><?= h($v) ?></strong></div>
@@ -6012,6 +6052,10 @@ $profileScore = $user ? profile_score($user) : 0;
                             <form class="form" method="post" enctype="multipart/form-data">
                                 <?= csrf_input() ?>
                                 <input type="hidden" name="action" value="update_profile">
+                                <label class="label">Profile Photo
+                                    <input class="input" type="file" name="profile_photo" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp">
+                                    <span class="tiny muted">PNG, JPG, or WebP. Maximum size: 2 MB.</span>
+                                </label>
                                 <?php if ($isCompany): ?>
                                     <label class="label">Company Name<input class="input" name="company_name" value="<?= h($user['company_name'] ?? '') ?>"></label>
                                     <label class="label">Industry<input class="input" name="industry" value="<?= h($user['industry'] ?? '') ?>"></label>
