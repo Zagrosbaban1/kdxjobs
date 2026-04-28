@@ -70,6 +70,97 @@ function h(?string $value): string
     return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
 }
 
+function app_locale(): string
+{
+    $requested = (string) ($_GET['lang'] ?? '');
+    if (in_array($requested, ['en', 'ar'], true)) {
+        $_SESSION['locale'] = $requested;
+    }
+
+    $locale = (string) ($_SESSION['locale'] ?? 'en');
+    return in_array($locale, ['en', 'ar'], true) ? $locale : 'en';
+}
+
+function is_arabic(): bool
+{
+    return app_locale() === 'ar';
+}
+
+function tr(string $key): string
+{
+    static $translations = [
+        'ar' => [
+            'tech_hiring_platform' => 'منصة توظيف تقنية',
+            'home' => 'الرئيسية',
+            'jobs' => 'الوظائف',
+            'companies' => 'الشركات',
+            'blog' => 'المدونة',
+            'login' => 'تسجيل الدخول',
+            'register' => 'إنشاء حساب',
+            'logout' => 'تسجيل الخروج',
+            'admin_panel' => 'لوحة الإدارة',
+            'company_dashboard' => 'لوحة الشركة',
+            'jobseeker_dashboard' => 'لوحة الباحث عن عمل',
+            'menu' => 'القائمة',
+            'language_label' => 'العربية',
+            'switch_language' => 'English',
+            'platform' => 'المنصة',
+            'browse_jobs' => 'تصفح الوظائف',
+            'hiring_companies' => 'الشركات الموظفة',
+            'accounts' => 'الحسابات',
+            'create_account' => 'إنشاء حساب',
+            'company_access' => 'دخول الشركات',
+            'company' => 'الشركة',
+            'about_us' => 'من نحن',
+            'faq' => 'الأسئلة الشائعة',
+            'privacy_policy' => 'سياسة الخصوصية',
+            'terms' => 'الشروط',
+            'contact_us' => 'اتصل بنا',
+            'footer_tagline' => 'أدوات توظيف للمرشحين والشركات والإدارة.',
+            'copyright' => 'جميع الحقوق محفوظة.',
+            'profile' => 'الملف الشخصي',
+            'my_applications' => 'طلباتي',
+            'saved_jobs' => 'الوظائف المحفوظة',
+            'saved_searches' => 'عمليات البحث المحفوظة',
+            'settings' => 'الإعدادات',
+            'applicants' => 'المتقدمون',
+            'post_job' => 'نشر وظيفة',
+            'manage_jobs' => 'إدارة الوظائف',
+            'statistics' => 'الإحصائيات',
+            'applications' => 'الطلبات',
+            'inbox' => 'البريد الوارد',
+            'manage' => 'الإدارة',
+            'admins' => 'المشرفون',
+            'jobseeker_title' => 'لوحة الباحث عن عمل',
+            'company_title' => 'لوحة الشركة',
+            'admin_title' => 'لوحة الإدارة',
+            'super_admin_title' => 'لوحة المدير العام',
+            'jobseeker_subtitle' => 'إدارة ملفك الشخصي والسيرة الذاتية والوظائف المحفوظة والطلبات.',
+            'company_subtitle' => 'إدارة ملف الشركة والوظائف والمتقدمين.',
+            'admin_subtitle' => 'إدارة المستخدمين والشركات والوظائف والطلبات والإعدادات.',
+            'super_admin_subtitle' => 'إنشاء المشرفين والتحكم بالمستخدمين والشركات والوظائف والطلبات والإعدادات.',
+            'profile_photo_details' => 'صورة الملف الشخصي وتفاصيل الحساب',
+            'company_account_profile' => 'ملف حساب الشركة',
+            'admin_account_profile' => 'ملف حساب الإدارة',
+            'data_analyst' => 'محلل بيانات',
+            'tech_company' => 'شركة تقنية',
+            'super_admin' => 'مدير عام',
+            'recruiter_admin' => 'مشرف توظيف',
+            'dark_mode' => 'الوضع الداكن',
+            'switch_theme' => 'تبديل المظهر',
+        ],
+    ];
+
+    return $translations[app_locale()][$key] ?? $key;
+}
+
+function localized_url(string $locale): string
+{
+    $query = $_GET;
+    $query['lang'] = in_array($locale, ['en', 'ar'], true) ? $locale : 'en';
+    return app_base_path() . '/index.php?' . http_build_query($query);
+}
+
 function csrf_token_value(): string
 {
     if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
@@ -682,6 +773,7 @@ function is_super_admin(): bool
 function go(string $page, string $message = '', array $extra = []): never
 {
     $query = array_merge(['page' => $page], $extra);
+    $query['lang'] = app_locale();
     if ($message !== '') {
         $query['message'] = $message;
     }
@@ -2165,6 +2257,7 @@ if ($page === 'application' && $user) {
 
 function app_url(string $page, array $extra = []): string
 {
+    $extra = array_merge(['lang' => app_locale()], $extra);
     return app_base_path() . '/index.php?' . http_build_query(array_merge(['page' => $page], $extra));
 }
 
@@ -4410,7 +4503,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
 }
 ?>
 <!doctype html>
-<html lang="en">
+<html lang="<?= h(app_locale()) ?>" dir="<?= is_arabic() ? 'rtl' : 'ltr' ?>">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -4440,6 +4533,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
         .ck.ck-toolbar{border-color:#e0f2fe;background:#f8fafc}
         .ck.ck-toolbar .ck-button.ck-on{background:#e0f2fe;color:#0369a1}
         .brand{gap:14px}.brand-icon{width:58px;height:58px;border:1px solid #dbeafe;background:#fff;box-shadow:0 12px 28px rgba(8,23,255,.10);font-size:0;overflow:hidden}.brand-icon img{display:block;width:48px;height:48px;object-fit:contain}.brand-logo{display:block;width:48px;height:48px}
+        .language-switch{min-width:74px;padding-inline:14px}.locale-ar{font-family:Tahoma,Arial,sans-serif}.locale-ar .nav,.locale-ar .brand,.locale-ar .nav-actions,.locale-ar .hero-actions,.locale-ar .footer-bottom,.locale-ar .social-row,.locale-ar .side-user,.locale-ar .profile-header{direction:rtl}.locale-ar .nav-link,.locale-ar .btn,.locale-ar .side-btn,.locale-ar .label,.locale-ar .profile-box,.locale-ar .footer-links{text-align:right}.locale-ar .search-inner{direction:rtl}.locale-ar .footer-top{direction:rtl}.locale-ar .nav-link::before{margin-left:10px;margin-right:0;transform:rotate(180deg)}
         .timeline-list{display:grid;gap:10px;border-left:3px solid #bae6fd;padding-left:14px}.timeline-item{position:relative;display:grid;gap:4px;border-radius:14px;background:#f8fafc;padding:12px}.timeline-item:before{content:"";position:absolute;left:-22px;top:18px;width:12px;height:12px;border-radius:999px;background:#0ea5e9;box-shadow:0 0 0 4px #e0f2fe}.timeline-item.interview{background:#f0fdf4}.timeline-item.interview:before{background:#22c55e}.analytics-bar{height:10px;border-radius:999px;background:#e0f2fe;overflow:hidden;margin-top:8px}.analytics-bar span{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#0ea5e9,#2563eb)}
         .service-chat{margin-top:16px;border:1px solid #e0f2fe;border-radius:18px;background:#fff;padding:14px}.service-chat-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.service-chat-body{display:grid;gap:10px;max-height:260px;overflow:auto;padding-right:4px}.chat-bubble{max-width:82%;border-radius:16px;padding:12px}.chat-bubble p{margin:6px 0;line-height:1.55}.chat-bubble.candidate{justify-self:start;background:#f0f9ff}.chat-bubble.support{justify-self:end;background:#ecfdf5}.service-chat-form{display:grid;grid-template-columns:1fr auto;gap:10px;margin-top:12px;align-items:end}
         .theme-toggle{width:44px;height:44px;padding:0;border-radius:999px;font-size:18px;line-height:1}
@@ -4482,26 +4576,26 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
         @media(max-width:420px){.wrap{padding-left:12px;padding-right:12px}.nav{gap:10px}.nav-link{padding:8px 10px;font-size:13px}.theme-toggle{width:40px;height:40px}.pill{max-width:100%;white-space:normal;border-radius:16px}h1{font-size:36px}.hero{padding-top:34px}.section{padding:38px 0}.btn{width:100%;padding:11px 14px}.nav-actions .theme-toggle{width:40px}.search-inner{padding:0 6px}.footer-brand{font-size:40px}.role-tabs{grid-template-columns:1fr}.progress-track{grid-template-columns:1fr}}
     </style>
 </head>
-<body>
+<body class="<?= is_arabic() ? 'locale-ar' : 'locale-en' ?>">
 <header class="header">
     <div class="wrap nav">
         <a class="brand" href="<?= h(app_url('home')) ?>">
             <span class="brand-icon"><img src="<?= h(asset_url('assets/kdx-logo.svg')) ?>" alt=""></span>
-            <span><span class="brand-title">KDXJobs</span><br><span class="brand-sub">Tech Hiring Platform</span></span>
+            <span><span class="brand-title">KDXJobs</span><br><span class="brand-sub"><?= h(tr('tech_hiring_platform')) ?></span></span>
         </a>
-        <button class="btn outline nav-menu-toggle" type="button" data-nav-toggle aria-label="Open navigation menu" aria-expanded="false">&#9776;</button>
+        <button class="btn outline nav-menu-toggle" type="button" data-nav-toggle aria-label="<?= h(tr('menu')) ?>" aria-expanded="false">&#9776;</button>
         <nav class="nav-links">
             <?php
-            $navItems = [['home','Home'],['jobs','Jobs'],['companies','Companies'],['blog','Blog']];
+            $navItems = [['home', tr('home')], ['jobs', tr('jobs')], ['companies', tr('companies')], ['blog', tr('blog')]];
             if (!$user) {
-                $navItems[] = ['login', 'Login'];
-                $navItems[] = ['register', 'Register'];
+                $navItems[] = ['login', tr('login')];
+                $navItems[] = ['register', tr('register')];
             } elseif (is_admin_role($user['role'])) {
-                $navItems[] = ['admin', 'Admin Panel'];
+                $navItems[] = ['admin', tr('admin_panel')];
             } elseif ($user['role'] === 'company') {
-                $navItems[] = ['company', 'Company Dashboard'];
+                $navItems[] = ['company', tr('company_dashboard')];
             } else {
-                $navItems[] = ['user', 'Job Seeker Dashboard'];
+                $navItems[] = ['user', tr('jobseeker_dashboard')];
             }
             foreach ($navItems as [$id,$label]):
             ?>
@@ -4510,25 +4604,27 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
             <div class="nav-mobile-actions">
                 <?php if ($user): ?>
                     <span class="tiny muted"><?= h($user['full_name'] ?: ($user['company_name'] ?: $user['email'])) ?></span>
-                    <form method="post"><?= csrf_input() ?><input type="hidden" name="action" value="logout"><button class="nav-link nav-action-button" type="submit">Logout</button></form>
+                    <form method="post"><?= csrf_input() ?><input type="hidden" name="action" value="logout"><button class="nav-link nav-action-button" type="submit"><?= h(tr('logout')) ?></button></form>
                 <?php else: ?>
-                    <a class="nav-link" href="<?= h(app_url('login')) ?>">Login</a>
-                    <a class="nav-link" href="<?= h(app_url('register')) ?>">Register</a>
+                    <a class="nav-link" href="<?= h(app_url('login')) ?>"><?= h(tr('login')) ?></a>
+                    <a class="nav-link" href="<?= h(app_url('register')) ?>"><?= h(tr('register')) ?></a>
                 <?php endif; ?>
+                <a class="nav-link" href="<?= h(localized_url(is_arabic() ? 'en' : 'ar')) ?>"><?= h(tr('switch_language')) ?></a>
             </div>
         </nav>
         <div class="nav-actions">
-            <button class="btn outline theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark mode" title="Switch theme"><span data-theme-icon aria-hidden="true">&#9790;</span><span class="sr-only" data-theme-label>Dark mode</span></button>
+            <a class="btn outline language-switch" href="<?= h(localized_url(is_arabic() ? 'en' : 'ar')) ?>" title="<?= h(tr('language_label')) ?>"><?= h(is_arabic() ? 'EN' : 'AR') ?></a>
+            <button class="btn outline theme-toggle" type="button" data-theme-toggle aria-label="<?= h(tr('dark_mode')) ?>" title="<?= h(tr('switch_theme')) ?>"><span data-theme-icon aria-hidden="true">&#9790;</span><span class="sr-only" data-theme-label><?= h(tr('dark_mode')) ?></span></button>
             <?php if ($user): ?>
                 <span class="tiny muted"><?= h($user['full_name'] ?: ($user['company_name'] ?: $user['email'])) ?></span>
-                <form method="post"><?= csrf_input() ?><input type="hidden" name="action" value="logout"><button class="btn outline">Logout</button></form>
+                <form method="post"><?= csrf_input() ?><input type="hidden" name="action" value="logout"><button class="btn outline"><?= h(tr('logout')) ?></button></form>
             <?php else: ?>
-                <a class="btn outline" href="<?= h(app_url('login')) ?>">Login</a>
-                <a class="btn" href="<?= h(app_url('register')) ?>">Register</a>
+                <a class="btn outline" href="<?= h(app_url('login')) ?>"><?= h(tr('login')) ?></a>
+                <a class="btn" href="<?= h(app_url('register')) ?>"><?= h(tr('register')) ?></a>
             <?php endif; ?>
         </div>
-        <button class="btn outline theme-toggle theme-mobile" type="button" data-theme-toggle aria-label="Switch to dark mode" title="Switch theme"><span data-theme-icon aria-hidden="true">&#9790;</span><span class="sr-only" data-theme-label>Dark mode</span></button>
-        <a class="btn outline mobile-menu" href="<?= h(app_url('jobs')) ?>">Menu</a>
+        <button class="btn outline theme-toggle theme-mobile" type="button" data-theme-toggle aria-label="<?= h(tr('dark_mode')) ?>" title="<?= h(tr('switch_theme')) ?>"><span data-theme-icon aria-hidden="true">&#9790;</span><span class="sr-only" data-theme-label><?= h(tr('dark_mode')) ?></span></button>
+        <a class="btn outline mobile-menu" href="<?= h(app_url('jobs')) ?>"><?= h(tr('menu')) ?></a>
     </div>
 </header>
 
@@ -5372,8 +5468,8 @@ $isApplicationOwner = !is_admin_role($user['role'] ?? '') && ($user['role'] ?? '
 <?php
 $isUser = $page === 'user';
 $isCompany = $page === 'company';
-$title = $isUser ? 'Job Seeker Dashboard' : ($isCompany ? 'Company Dashboard' : (is_super_admin() ? 'Super Admin Dashboard' : 'Admin Dashboard'));
-$subtitle = $isUser ? 'Manage your profile, CV, saved jobs, and applications.' : ($isCompany ? 'Manage your company profile, job posts, and applicants.' : (is_super_admin() ? 'Create admins and control users, companies, jobs, applications, and settings.' : 'Manage recruitment users, companies, job posts, approvals, and statistics.'));
+$title = $isUser ? tr('jobseeker_title') : ($isCompany ? tr('company_title') : (is_super_admin() ? tr('super_admin_title') : tr('admin_title')));
+$subtitle = $isUser ? tr('jobseeker_subtitle') : ($isCompany ? tr('company_subtitle') : (is_super_admin() ? tr('super_admin_subtitle') : tr('admin_subtitle')));
 $company = $companies[0] ?? null;
 if ($isCompany && $user) {
     foreach ($companies as $candidateCompany) {
@@ -5441,12 +5537,12 @@ $applicationsTotalPages = max(1, (int) ceil($applicationsTotal / $applicationsPe
 $applicationsPage = min($applicationsPage, $applicationsTotalPages);
 $pagedDashboardApplications = array_slice($filteredDashboardApplications, ($applicationsPage - 1) * $applicationsPerPage, $applicationsPerPage);
 $dashboardMenu = $isUser
-    ? ['profile' => 'Profile', 'applications' => 'My Applications', 'saved' => 'Saved Jobs', 'saved_searches' => 'Saved Searches', 'settings' => 'Settings']
+    ? ['profile' => tr('profile'), 'applications' => tr('my_applications'), 'saved' => tr('saved_jobs'), 'saved_searches' => tr('saved_searches'), 'settings' => tr('settings')]
         : ($isCompany
-        ? ['profile' => 'Profile', 'applications' => 'Applicants', 'post_job' => 'Post a Job', 'manage' => 'Manage Jobs', 'statistics' => 'Statistics', 'settings' => 'Settings']
+        ? ['profile' => tr('profile'), 'applications' => tr('applicants'), 'post_job' => tr('post_job'), 'manage' => tr('manage_jobs'), 'statistics' => tr('statistics'), 'settings' => tr('settings')]
         : (is_super_admin()
-            ? ['profile' => 'Profile', 'applications' => 'Applications', 'post_job' => 'Post a Job', 'blog' => 'Blog', 'inbox' => 'Inbox', 'manage' => 'Manage', 'admins' => 'Admins', 'statistics' => 'Statistics', 'settings' => 'Settings']
-            : ['profile' => 'Profile', 'applications' => 'Applications', 'post_job' => 'Post a Job', 'blog' => 'Blog', 'inbox' => 'Inbox', 'manage' => 'Manage', 'statistics' => 'Statistics', 'settings' => 'Settings']));
+            ? ['profile' => tr('profile'), 'applications' => tr('applications'), 'post_job' => tr('post_job'), 'blog' => tr('blog'), 'inbox' => tr('inbox'), 'manage' => tr('manage'), 'admins' => tr('admins'), 'statistics' => tr('statistics'), 'settings' => tr('settings')]
+            : ['profile' => tr('profile'), 'applications' => tr('applications'), 'post_job' => tr('post_job'), 'blog' => tr('blog'), 'inbox' => tr('inbox'), 'manage' => tr('manage'), 'statistics' => tr('statistics'), 'settings' => tr('settings')]));
 if (!isset($dashboardMenu[$tab])) {
     $tab = array_key_first($dashboardMenu);
 }
@@ -5461,7 +5557,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
         <div class="dash-hero"><h2><?= h($title) ?></h2><p><?= h($subtitle) ?></p></div>
         <div class="dash-layout">
             <aside class="card side">
-                <div class="side-user"><?= profile_photo_html($user['profile_photo'] ?? null, (string) $displayName, 'profile-photo side-photo') ?><div><strong><?= h((string) $displayName) ?></strong><br><span class="tiny muted"><?= $isUser ? 'Data Analyst' : ($isCompany ? 'Tech Company' : (is_super_admin() ? 'Super Admin' : 'Recruiter Admin')) ?></span></div></div>
+                <div class="side-user"><?= profile_photo_html($user['profile_photo'] ?? null, (string) $displayName, 'profile-photo side-photo') ?><div><strong><?= h((string) $displayName) ?></strong><br><span class="tiny muted"><?= h($isUser ? tr('data_analyst') : ($isCompany ? tr('tech_company') : (is_super_admin() ? tr('super_admin') : tr('recruiter_admin')))) ?></span></div></div>
                 <?php foreach ($dashboardMenu as $key => $item): ?>
                     <a class="side-btn <?= $tab === $key ? 'active' : '' ?>" href="<?= h(app_url($page, ['tab' => $key])) ?>">⚙️ <?= h($item) ?></a>
                 <?php endforeach; ?>
@@ -5499,7 +5595,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                             <?= profile_photo_html($user['profile_photo'] ?? null, (string) $displayName, 'profile-photo profile-photo-large') ?>
                             <div>
                                 <h3><?= h((string) $displayName) ?></h3>
-                                <p class="tiny muted">Profile photo and account details</p>
+                                <p class="tiny muted"><?= h(tr('profile_photo_details')) ?></p>
                             </div>
                         </div>
                         <div class="profile-grid">
@@ -5521,7 +5617,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                             <?= profile_photo_html($user['profile_photo'] ?? null, (string) $displayName, 'profile-photo profile-photo-large') ?>
                             <div>
                                 <h3><?= h((string) $displayName) ?></h3>
-                                <p class="tiny muted">Company account profile</p>
+                                <p class="tiny muted"><?= h(tr('company_account_profile')) ?></p>
                             </div>
                         </div>
                         <div class="profile-grid">
@@ -5534,7 +5630,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                             <?= profile_photo_html($user['profile_photo'] ?? null, (string) $displayName, 'profile-photo profile-photo-large') ?>
                             <div>
                                 <h3><?= h((string) $displayName) ?></h3>
-                                <p class="tiny muted">Admin account profile</p>
+                                <p class="tiny muted"><?= h(tr('admin_account_profile')) ?></p>
                             </div>
                         </div>
                         <div class="profile-grid">
@@ -6129,32 +6225,32 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
         <div class="footer-top">
             <div>
                 <div class="footer-brand">KDXJOBS</div>
-                <span class="tiny muted">Recruitment tools for candidates, companies, and admins.</span>
+                <span class="tiny muted"><?= h(tr('footer_tagline')) ?></span>
             </div>
             <div class="footer-links">
-                <strong>Platform</strong>
-                <a href="<?= h(app_url('jobs')) ?>">Browse Jobs</a>
-                <a href="<?= h(app_url('companies')) ?>">Hiring Companies</a>
+                <strong><?= h(tr('platform')) ?></strong>
+                <a href="<?= h(app_url('jobs')) ?>"><?= h(tr('browse_jobs')) ?></a>
+                <a href="<?= h(app_url('companies')) ?>"><?= h(tr('hiring_companies')) ?></a>
             </div>
             <div class="footer-links">
-                <strong>Accounts</strong>
-                <a href="<?= h(app_url('register')) ?>">Create Account</a>
-                <a href="<?= h(app_url('login')) ?>">Login</a>
-                <a href="<?= h(app_url('company')) ?>">Company Access</a>
+                <strong><?= h(tr('accounts')) ?></strong>
+                <a href="<?= h(app_url('register')) ?>"><?= h(tr('create_account')) ?></a>
+                <a href="<?= h(app_url('login')) ?>"><?= h(tr('login')) ?></a>
+                <a href="<?= h(app_url('company')) ?>"><?= h(tr('company_access')) ?></a>
             </div>
             <div class="footer-links">
-                <strong>Company</strong>
-                <a href="<?= h(app_url('about')) ?>">About Us</a>
-                <a href="<?= h(app_url('faq')) ?>">FAQ</a>
-                <a href="<?= h(app_url('policy')) ?>">Privacy Policy</a>
-                <a href="<?= h(app_url('terms')) ?>">Terms</a>
-                <a href="<?= h(app_url('contact')) ?>">Contact Us</a>
+                <strong><?= h(tr('company')) ?></strong>
+                <a href="<?= h(app_url('about')) ?>"><?= h(tr('about_us')) ?></a>
+                <a href="<?= h(app_url('faq')) ?>"><?= h(tr('faq')) ?></a>
+                <a href="<?= h(app_url('policy')) ?>"><?= h(tr('privacy_policy')) ?></a>
+                <a href="<?= h(app_url('terms')) ?>"><?= h(tr('terms')) ?></a>
+                <a href="<?= h(app_url('contact')) ?>"><?= h(tr('contact_us')) ?></a>
             </div>
         </div>
         <div class="footer-bottom">
-            <span class="tiny muted">&copy;2026 KDXJOBS Inc. All rights reserved.</span>
+            <span class="tiny muted">&copy;2026 KDXJOBS Inc. <?= h(tr('copyright')) ?></span>
             <div class="social-row" aria-label="Social links">
-                <span class="language-pill">EN</span>
+                <a class="language-pill" href="<?= h(localized_url(is_arabic() ? 'en' : 'ar')) ?>"><?= h(is_arabic() ? 'EN' : 'AR') ?></a>
                 <span class="social-dot">in</span>
                 <span class="social-dot">f</span>
                 <span class="social-dot">ig</span>
