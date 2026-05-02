@@ -3733,6 +3733,7 @@ function extract_pdf_text(?string $relativePath): string
 
 function detect_experience_years(string $text): ?int
 {
+    $originalText = $text;
     $text = strtolower($text);
     $years = [];
     $patterns = [
@@ -3752,7 +3753,129 @@ function detect_experience_years(string $text): ?int
         }
     }
 
+    $monthsFromRanges = detect_experience_months_from_date_ranges($originalText);
+    if ($monthsFromRanges > 0) {
+        $years[] = max(1, (int) floor($monthsFromRanges / 12));
+    }
+
     return $years ? max($years) : null;
+}
+
+function experience_month_number(string $month): ?int
+{
+    $month = trim($month);
+    if (ctype_digit($month)) {
+        $value = (int) $month;
+        return ($value >= 1 && $value <= 12) ? $value : null;
+    }
+
+    $key = strtolower(substr($month, 0, 3));
+    $map = [
+        'jan' => 1,
+        'feb' => 2,
+        'mar' => 3,
+        'apr' => 4,
+        'may' => 5,
+        'jun' => 6,
+        'jul' => 7,
+        'aug' => 8,
+        'sep' => 9,
+        'oct' => 10,
+        'nov' => 11,
+        'dec' => 12,
+    ];
+
+    return $map[$key] ?? null;
+}
+
+function experience_date_to_month_index(string $month, string $year): ?int
+{
+    $yearNumber = (int) $year;
+    if ($yearNumber < 1950 || $yearNumber > ((int) date('Y') + 1)) {
+        return null;
+    }
+
+    $monthNumber = $month !== '' ? experience_month_number($month) : 1;
+    if ($monthNumber === null) {
+        return null;
+    }
+
+    return ($yearNumber * 12) + $monthNumber;
+}
+
+function detect_experience_months_from_date_ranges(string $text): int
+{
+    $monthPattern = '(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)';
+    $separator = '\s*(?:-|–|—|to|until|till)\s*';
+    $currentMonth = ((int) date('Y') * 12) + (int) date('n');
+    $ranges = [];
+    $patterns = [
+        '/\b' . $monthPattern . '\s+((?:19|20)\d{2})' . $separator . '(?:(?:' . $monthPattern . ')\s+((?:19|20)\d{2})|(Present|Current|Now))\b/i',
+        '/\b((?:19|20)\d{2})' . $separator . '((?:19|20)\d{2}|Present|Current|Now)\b/i',
+        '/\b(\d{1,2})[\/. -]((?:19|20)\d{2})' . $separator . '(?:(\d{1,2})[\/. -]((?:19|20)\d{2})|(Present|Current|Now))\b/i',
+    ];
+
+    if (preg_match_all($patterns[0], $text, $matches, PREG_SET_ORDER)) {
+        foreach ($matches as $match) {
+            $start = experience_date_to_month_index($match[1] ?? '', $match[2] ?? '');
+            $end = !empty($match[5])
+                ? $currentMonth
+                : experience_date_to_month_index($match[3] ?? '', $match[4] ?? '');
+            if ($start !== null && $end !== null && $end >= $start) {
+                $ranges[] = [$start, $end];
+            }
+        }
+    }
+
+    if (preg_match_all($patterns[1], $text, $matches, PREG_SET_ORDER)) {
+        foreach ($matches as $match) {
+            $start = experience_date_to_month_index('', $match[1] ?? '');
+            $end = preg_match('/present|current|now/i', (string) ($match[2] ?? ''))
+                ? $currentMonth
+                : experience_date_to_month_index('', $match[2] ?? '');
+            if ($start !== null && $end !== null && $end >= $start) {
+                $ranges[] = [$start, $end];
+            }
+        }
+    }
+
+    if (preg_match_all($patterns[2], $text, $matches, PREG_SET_ORDER)) {
+        foreach ($matches as $match) {
+            $startMonth = max(1, min(12, (int) ($match[1] ?? 1)));
+            $start = experience_date_to_month_index((string) $startMonth, $match[2] ?? '');
+            if (!empty($match[5])) {
+                $end = $currentMonth;
+            } else {
+                $endMonth = max(1, min(12, (int) ($match[3] ?? 1)));
+                $end = experience_date_to_month_index((string) $endMonth, $match[4] ?? '');
+            }
+            if ($start !== null && $end !== null && $end >= $start) {
+                $ranges[] = [$start, $end];
+            }
+        }
+    }
+
+    if (!$ranges) {
+        return 0;
+    }
+
+    usort($ranges, static fn(array $a, array $b): int => $a[0] <=> $b[0]);
+    $merged = [];
+    foreach ($ranges as $range) {
+        if (!$merged || $range[0] > $merged[count($merged) - 1][1] + 1) {
+            $merged[] = $range;
+            continue;
+        }
+        $lastIndex = count($merged) - 1;
+        $merged[$lastIndex][1] = max($merged[$lastIndex][1], $range[1]);
+    }
+
+    $months = 0;
+    foreach ($merged as $range) {
+        $months += max(0, $range[1] - $range[0] + 1);
+    }
+
+    return $months;
 }
 
 function detect_languages(string $text): array
@@ -4161,7 +4284,7 @@ function cached_ai_job_match(array $application): ?array
     if (($stored['matching_mode'] ?? '') !== $currentMode) {
         return null;
     }
-    if ((int) ($stored['screening_template_version'] ?? 0) < 1) {
+    if ((int) ($stored['screening_template_version'] ?? 0) < 2) {
         return null;
     }
 
@@ -4289,7 +4412,7 @@ function openai_cv_job_match(array $application, array $candidateScreen, array $
         'confidence' => trim((string) ($decoded['confidence'] ?? '')),
         'matching_mode' => $matchingMode,
         'screening_template' => $template['name'] ?? 'General role',
-        'screening_template_version' => 1,
+        'screening_template_version' => 2,
         'provider' => 'openai',
         'model' => $model,
     ];
@@ -4560,6 +4683,7 @@ function candidate_match_score(array $application): array
             $candidateYears = max((int) ($candidateYears ?? 0), (int) $years);
         }
     }
+    $candidateScreen['years'] = $candidateYears;
 
     $candidateLookup = array_flip(array_map('strtolower', $candidateSkills));
     $matches = array_values(array_filter($signals, static fn(string $signal): bool => isset($candidateLookup[strtolower($signal)])));
@@ -4734,7 +4858,7 @@ function candidate_match_score(array $application): array
     return $result;
 }
 
-function candidate_match_html(array $application): string
+function candidate_match_html(array $application, bool $inlineDetails = true, string $backPage = 'admin', string $backTab = 'applications'): string
 {
     $match = candidate_match_score($application);
     $score = (int) $match['score'];
@@ -4785,6 +4909,13 @@ function candidate_match_html(array $application): string
     if (!empty($match['screen_warnings'])) {
         $insightParts[] = '<p><strong>Watch-outs:</strong> ' . h(implode('; ', array_slice($match['screen_warnings'], 0, 3))) . '</p>';
     }
+    $hasDetails = $reasons !== '' || $insightParts || $breakdownHtml !== '';
+    $detailsHtml = '';
+    if ($hasDetails && $inlineDetails) {
+        $detailsHtml = '<details class="match-details"><summary>Why?</summary><p>' . h($reasons) . '</p>' . $breakdownHtml . implode('', $insightParts) . '</details>';
+    } elseif ($hasDetails) {
+        $detailsHtml = '<a class="match-details-link" href="' . h(application_page_url($application, $backPage, $backTab) . '#ai-screening') . '">Why?</a>';
+    }
     return '<div class="match-score ' . h($class) . '">'
         . '<span class="tiny muted">AI CV Match</span>'
         . '<strong>' . h((string) $score) . '%</strong>'
@@ -4793,7 +4924,7 @@ function candidate_match_html(array $application): string
         . ($recruiterSummary !== '' ? '<p class="recruiter-summary">' . h($recruiterSummary) . '</p>' : '')
         . '<span class="tiny muted">' . h($matches) . '</span>'
         . $cvQualityHtml
-        . ($reasons !== '' || $insightParts || $breakdownHtml !== '' ? '<details class="match-details"><summary>Why?</summary><p>' . h($reasons) . '</p>' . $breakdownHtml . implode('', $insightParts) . '</details>' : '')
+        . $detailsHtml
         . '</div>';
 }
 
@@ -4887,7 +5018,7 @@ function applications_table(array $applications, string $page, string $applicati
                     <tr>
                         <td class="applicant-cell"><div class="table-primary"><a href="<?= h(application_page_url($a, $page, 'manage')) ?>"><?= h($a['applicant_name']) ?></a></div><div class="table-secondary"><?= h($a['applicant_email']) ?></div></td>
                         <td><?= h($a['job_title']) ?><br><span class="tiny muted"><?= h($a['company']) ?><?= !empty($a['recruiter_name']) ? ' · Recruiter: ' . h($a['recruiter_name']) : '' ?></span></td>
-                        <td class="match-cell"><?= candidate_match_html($a) ?></td>
+                        <td class="match-cell"><?= candidate_match_html($a, false, $page, 'manage') ?></td>
                         <td class="cv-cell"><?= cv_link_html($a['cv_file'] ?? null, 'View CV') ?></td>
                         <td class="status-cell"><span class="status-pill <?= h(status_class($a['status'])) ?>"><?= h($a['status']) ?></span></td>
                         <td class="compact-progress"><?= current_progress_html($a['status']) ?></td>
@@ -4955,7 +5086,7 @@ function applications_hiring_table(array $applications, string $page, string $re
                             </div>
                         </td>
                         <td class="match-cell">
-                            <div class="table-fit-wrap"><?= candidate_match_html($a) ?></div>
+                            <div class="table-fit-wrap"><?= candidate_match_html($a, false, $page, $redirectTab) ?></div>
                         </td>
                         <td class="status-cell">
                             <div class="table-status-wrap">
@@ -5073,7 +5204,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
         .skill-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.skill-option{display:flex;align-items:center;gap:8px;border:1px solid #e0f2fe;border-radius:14px;background:#f8fafc;padding:10px 12px;font-weight:900;color:#334155}.skill-option input{width:auto}.score-bar{height:10px;border-radius:999px;background:#e2e8f0;overflow:hidden;margin-top:10px}.score-bar span{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#0ea5e9,#22c55e)}.file-link{color:#0369a1;font-weight:950}@media(max-width:800px){.skill-grid,.skills-dropdown-menu{grid-template-columns:1fr}}
         .skills-dropdown{position:relative}.skills-dropdown summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:52px;border:1px solid #e0f2fe;border-radius:16px;background:#fff;padding:13px 16px;color:#334155;cursor:pointer;list-style:none}.skills-dropdown summary::-webkit-details-marker{display:none}.skills-dropdown summary:after{content:"";width:8px;height:8px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(45deg);transition:.2s}.skills-dropdown[open] summary{border-color:#7dd3fc;box-shadow:0 0 0 4px #e0f2fe}.skills-dropdown[open] summary:after{transform:rotate(225deg)}.skills-dropdown-menu{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:10px;border:1px solid #e0f2fe;border-radius:16px;background:#fff;padding:12px;box-shadow:0 16px 36px rgba(15,23,42,.08)}
         .cv-upload{display:grid;grid-template-columns:auto 1fr;gap:14px;align-items:center;border:1px dashed #7dd3fc;border-radius:18px;background:linear-gradient(135deg,#f0f9ff,#fff);padding:16px 18px;transition:.2s}.cv-upload:hover{border-color:#0ea5e9;background:#e0f2fe;box-shadow:0 12px 26px rgba(14,165,233,.12)}.cv-upload-icon{display:inline-flex;align-items:center;justify-content:center;width:54px;height:54px;border-radius:16px;background:#0ea5e9;color:#fff;box-shadow:0 12px 22px rgba(14,165,233,.2)}.cv-upload-icon svg{width:30px;height:30px;fill:none;stroke:currentColor;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.cv-upload-copy{display:grid;gap:7px;min-width:0}.cv-upload-copy strong{font-size:16px;color:#0f172a}.cv-upload-copy span{color:#64748b;font-size:13px;font-weight:800}.cv-upload-input{width:100%;max-width:360px;border:1px solid #bae6fd;border-radius:12px;background:#fff;padding:10px;color:#334155;cursor:pointer}.cv-upload-file{display:inline-flex;width:max-content;max-width:100%;border-radius:999px;background:#e0f2fe;padding:5px 10px;color:#0369a1!important;font-size:12px!important;font-weight:950!important}
-        .match-score{display:grid;gap:6px;min-width:150px}.match-score strong{font-size:20px}.match-score.high strong{color:#15803d}.match-score.medium strong{color:#b45309}.match-score.low strong{color:#b91c1c}.match-score .score-bar{margin-top:0}.match-score .cv-quality-line{display:block;font-size:10px;line-height:1.2;font-weight:950;white-space:nowrap}.match-score .cv-quality-line strong{font-size:10px;font-weight:950}.match-score.high .score-bar span{background:linear-gradient(90deg,#22c55e,#16a34a)}.match-score.medium .score-bar span{background:linear-gradient(90deg,#f59e0b,#d97706)}.match-score.low .score-bar span{background:linear-gradient(90deg,#ef4444,#dc2626)}.recruiter-summary{margin:0;color:#334155;font-size:11px;line-height:1.45;font-weight:800}.match-details{margin-top:2px}.match-details summary{width:max-content;cursor:pointer;color:#0369a1;font-size:12px;font-weight:950}.match-details p{max-width:360px;margin:6px 0 0;color:#475569;font-size:12px;line-height:1.55}
+        .match-score{display:grid;gap:6px;min-width:150px}.match-score strong{font-size:20px}.match-score.high strong{color:#15803d}.match-score.medium strong{color:#b45309}.match-score.low strong{color:#b91c1c}.match-score .score-bar{margin-top:0}.match-score .cv-quality-line{display:block;font-size:10px;line-height:1.2;font-weight:950;white-space:nowrap}.match-score .cv-quality-line strong{font-size:10px;font-weight:950}.match-score.high .score-bar span{background:linear-gradient(90deg,#22c55e,#16a34a)}.match-score.medium .score-bar span{background:linear-gradient(90deg,#f59e0b,#d97706)}.match-score.low .score-bar span{background:linear-gradient(90deg,#ef4444,#dc2626)}.recruiter-summary{margin:0;color:#334155;font-size:11px;line-height:1.45;font-weight:800}.match-details{margin-top:2px}.match-details summary,.match-details-link{width:max-content;cursor:pointer;color:#0369a1;font-size:12px;font-weight:950}.match-details-link{text-decoration:none}.match-details-link:hover{text-decoration:underline}.match-details p{max-width:360px;margin:6px 0 0;color:#475569;font-size:12px;line-height:1.55}
         .table-wrap{overflow:auto;border:1px solid #e0f2fe;border-radius:18px;background:#fff}.data-table{width:100%;border-collapse:separate;border-spacing:0;background:#fff;font-size:12px;line-height:1.35}.data-table th,.data-table td{padding:10px 12px;border-bottom:1px solid #eaf6ff;text-align:left;vertical-align:top}.data-table th{position:sticky;top:0;z-index:1;background:#f0f9ff;color:#334155;font-size:11px;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}.data-table tbody tr:hover td{background:#f8fbff}.data-table td .tiny{font-size:10px}.data-table tr:last-child td{border-bottom:0}.data-table a{color:#0f172a;text-decoration:none}.data-table a:hover{color:#0369a1}.table-primary{font-size:12px;font-weight:900;color:#0f172a;line-height:1.35}.table-secondary{margin-top:4px;color:#64748b;font-size:10px;font-weight:700;line-height:1.4}.table-tertiary{margin-top:3px;color:#94a3b8;font-size:10px;font-weight:700;line-height:1.35}.applicant-cell,.job-cell{min-width:190px}.match-cell{min-width:190px}.cv-cell{min-width:90px;white-space:nowrap}.status-cell{min-width:100px}.actions-cell{min-width:170px}.table-open-btn{display:inline-flex;margin-bottom:8px}.table-actions{display:flex;flex-direction:column;align-items:flex-start;gap:6px}.table-actions .select{min-width:130px;padding:8px 10px;border-radius:10px;font-size:12px}.table-actions .btn{padding:8px 10px;font-size:12px}.compact-progress{min-width:150px}
         .friendly-app-table .candidate-stack{display:grid;grid-template-columns:42px 1fr;gap:12px;align-items:start}.friendly-app-table .candidate-avatar{display:flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:14px;background:linear-gradient(135deg,#0ea5e9,#3b82f6);color:#fff;font-size:14px;font-weight:950;box-shadow:0 12px 24px rgba(14,165,233,.18)}.friendly-app-table .table-fit-wrap .match-score{min-width:135px}.friendly-app-table .table-fit-wrap .match-details p{max-width:240px}.friendly-app-table .table-status-wrap{display:grid;gap:8px}.friendly-app-table .table-score-note{color:#64748b;font-size:11px;font-weight:700;line-height:1.4}.friendly-app-table .table-inline-actions{display:grid;gap:10px}.friendly-app-table .table-mini-form{display:grid;gap:8px}.friendly-app-table .table-mini-form .select{min-width:150px;padding:9px 10px;border-radius:12px;font-size:12px}.friendly-app-table .table-mini-form .btn{padding:9px 12px;font-size:12px}.friendly-app-table tbody tr:hover td{background:linear-gradient(180deg,#f8fbff,#ffffff)}
         .manage-overview{display:grid;gap:18px;margin-bottom:24px}.manage-copy{display:grid;gap:8px;padding:22px}.manage-copy p{margin:0;color:#64748b;line-height:1.7}.manage-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.manage-summary .profile-box{background:linear-gradient(135deg,#f8fbff,#fff)}.manage-summary strong{display:block;font-size:24px;line-height:1;color:#0f172a}.manage-summary span{display:block;margin-top:8px;color:#64748b;font-size:13px;font-weight:800}.manage-edit-stack{display:grid;gap:14px;margin-top:18px}.manage-edit-stack .app-panel summary{background:#f8fbff}
@@ -5122,7 +5253,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
         body.theme-dark .badge,body.theme-dark .about-chip,body.theme-dark .tracking-badge,body.theme-dark .filter-count,body.theme-dark .cv-upload-file,body.theme-dark .app-panel summary:after{background:#0c4a6e!important;color:#bae6fd!important;border-color:#1e3a5f!important}
         body.theme-dark .table-primary,body.theme-dark .table-primary a,body.theme-dark .manage-summary strong,body.theme-dark .about-metric strong,body.theme-dark .filter-head h3,body.theme-dark .job-rich-text blockquote,body.theme-dark .rich-editor,body.theme-dark .company-line,body.theme-dark [style*="color:#475569"],body.theme-dark [style*="color:#334155"],body.theme-dark [style*="color:#0f172a"]{color:#e5e7eb!important}
         body.theme-dark .table-secondary,body.theme-dark .table-tertiary,body.theme-dark .friendly-app-table .table-score-note,body.theme-dark .toolbar-meta,body.theme-dark .pagination-meta,body.theme-dark .check-item,body.theme-dark .profile-hero-copy p,body.theme-dark .profile-score-card span,body.theme-dark .profile-activity-grid span,body.theme-dark .about-panel p,body.theme-dark .about-value p,body.theme-dark .tracking-story-copy p,body.theme-dark .tracking-card span,body.theme-dark .match-details p,body.theme-dark .recruiter-summary,body.theme-dark .manage-copy p,body.theme-dark .manage-summary span{color:#cbd5e1!important}
-        body.theme-dark [style*="color:#0369a1"],body.theme-dark [style*="color:#0284c7"],body.theme-dark .match-details summary,body.theme-dark .data-table a:hover{color:#7dd3fc!important}
+        body.theme-dark [style*="color:#0369a1"],body.theme-dark [style*="color:#0284c7"],body.theme-dark .match-details summary,body.theme-dark .match-details-link,body.theme-dark .data-table a:hover{color:#7dd3fc!important}
         body.theme-dark .input::placeholder,body.theme-dark .textarea::placeholder,body.theme-dark .search input::placeholder,body.theme-dark .rich-editor:empty:before{color:#94a3b8!important}
         body.theme-dark .data-table tbody tr:hover td,body.theme-dark .friendly-app-table tbody tr:hover td{background:#10233d!important}
         body.theme-dark .status-pill.new,body.theme-dark .status-pill.applied{background:#0c4a6e;color:#bae6fd}body.theme-dark .status-pill.reviewed{background:#312e81;color:#c7d2fe}body.theme-dark .status-pill.shortlisted{background:#451a03;color:#fde68a}body.theme-dark .status-pill.accepted{background:#052e16;color:#bbf7d0}body.theme-dark .status-pill.rejected{background:#450a0a;color:#fecaca}
@@ -6025,7 +6156,7 @@ $isApplicationOwner = !is_admin_role($user['role'] ?? '') && ($user['role'] ?? '
                         <div class="profile-box"><span class="tiny" style="color:#0369a1;font-weight:900"><?= h($label) ?></span><br><strong><?= h((string) $value) ?></strong></div>
                     <?php endforeach; ?>
                 </div>
-                <div style="margin-top:18px">
+                <div id="ai-screening" style="margin-top:18px">
                     <?= candidate_match_html($selectedApplication) ?>
                 </div>
                 <div class="job-rich-text" style="margin-top:18px">
