@@ -124,7 +124,8 @@ return new class extends Migration
             $table->foreignId('author_id')->nullable()->constrained('users')->nullOnDelete();
             $table->string('title', 180);
             $table->string('excerpt', 255)->nullable();
-            $table->text('content');
+            $table->mediumText('content');
+            $table->string('cover_image')->nullable();
             $table->string('category', 80)->nullable();
             $table->enum('status', ['draft', 'published'])->default('published');
             $table->timestamp('created_at')->useCurrent();

@@ -2,6 +2,7 @@
     const themeButtons = document.querySelectorAll('[data-theme-toggle]');
     const nav = document.querySelector('.nav');
     const navToggle = document.querySelector('[data-nav-toggle]');
+    const csrfToken = document.querySelector('input[name="csrf_token"]')?.value || '';
 
     const setTheme = (theme) => {
         const isDark = theme === 'dark';
@@ -77,6 +78,78 @@
         });
     });
 
+    document.querySelectorAll('[data-image-preview-target]').forEach((input) => {
+        const preview = document.getElementById(input.dataset.imagePreviewTarget || '');
+        if (!preview) {
+            return;
+        }
+
+        input.addEventListener('change', () => {
+            const file = input.files && input.files[0];
+            if (!file) {
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.addEventListener('load', () => {
+                preview.src = reader.result;
+                preview.classList.add('has-image');
+            });
+            reader.readAsDataURL(file);
+        });
+    });
+
+    document.querySelectorAll('[data-profile-tools]').forEach((panel) => {
+        const status = panel.querySelector('[data-profile-tool-status]');
+        const setStatus = (message) => {
+            if (!status) {
+                return;
+            }
+            status.textContent = message;
+            window.setTimeout(() => {
+                status.textContent = '';
+            }, 2500);
+        };
+
+        const copyButton = panel.querySelector('[data-copy-profile]');
+        if (copyButton) {
+            copyButton.addEventListener('click', async () => {
+                const summary = panel.dataset.profileSummary || '';
+                if (!summary.trim()) {
+                    setStatus('Nothing to copy yet.');
+                    return;
+                }
+
+                try {
+                    if (navigator.clipboard && window.isSecureContext) {
+                        await navigator.clipboard.writeText(summary);
+                    } else {
+                        const textarea = document.createElement('textarea');
+                        textarea.value = summary;
+                        textarea.setAttribute('readonly', '');
+                        textarea.style.position = 'fixed';
+                        textarea.style.left = '-9999px';
+                        document.body.appendChild(textarea);
+                        textarea.select();
+                        document.execCommand('copy');
+                        textarea.remove();
+                    }
+                    setStatus('Profile summary copied.');
+                } catch (error) {
+                    console.warn('Profile summary copy failed.', error);
+                    setStatus('Copy failed. Please try again.');
+                }
+            });
+        }
+
+        const printButton = panel.querySelector('[data-print-profile]');
+        if (printButton) {
+            printButton.addEventListener('click', () => {
+                window.print();
+            });
+        }
+    });
+
     const registerActionField = document.querySelector('form input[name="action"][value="register"]');
     const jobSeekerForm = registerActionField ? registerActionField.form : null;
     const companyForm = document.getElementById('company-form');
@@ -109,19 +182,69 @@
             const requiredEditor = isRequiredEditorField(source);
             source.required = false;
 
+            const toolbarOptions = [
+                [{ header: [2, 3, false] }],
+                ['bold', 'italic', 'underline'],
+                [{ list: 'ordered' }, { list: 'bullet' }],
+                ['blockquote', 'link', 'image'],
+                ['clean']
+            ];
+
             const quill = new window.Quill(host, {
                 theme: 'snow',
                 placeholder: host.dataset.placeholder || '',
                 modules: {
-                    toolbar: [
-                        [{ header: [2, 3, false] }],
-                        ['bold', 'italic', 'underline'],
-                        [{ list: 'ordered' }, { list: 'bullet' }],
-                        ['blockquote', 'link'],
-                        ['clean']
-                    ]
+                    toolbar: {
+                        container: toolbarOptions,
+                        handlers: {
+                            image() {
+                                const input = document.createElement('input');
+                                input.type = 'file';
+                                input.accept = 'image/png,image/jpeg,image/webp';
+                                input.addEventListener('change', () => {
+                                    const file = input.files && input.files[0];
+                                    if (!file) {
+                                        return;
+                                    }
+                                    if (file.size > 2 * 1024 * 1024) {
+                                        window.alert('Please choose an image smaller than 2 MB.');
+                                        return;
+                                    }
+
+                                    const data = new FormData();
+                                    data.append('action', 'upload_blog_editor_image');
+                                    data.append('csrf_token', csrfToken);
+                                    data.append('editor_image', file);
+
+                                    fetch(window.location.href, {
+                                        method: 'POST',
+                                        body: data,
+                                        headers: { 'Accept': 'application/json' }
+                                    })
+                                        .then((response) => response.json())
+                                        .then((result) => {
+                                            if (!result.ok || !result.url) {
+                                                throw new Error(result.error || 'Could not upload image.');
+                                            }
+                                            const range = quill.getSelection(true);
+                                            quill.insertEmbed(range.index, 'image', result.url, 'user');
+                                            quill.setSelection(range.index + 1, 0);
+                                            sync();
+                                        })
+                                        .catch((error) => {
+                                            window.alert(error.message || 'Could not upload image.');
+                                        });
+                                });
+                                input.click();
+                            }
+                        }
+                    }
                 }
             });
+
+            if (source.value.trim() !== '') {
+                quill.clipboard.dangerouslyPasteHTML(source.value);
+            }
 
             const sync = () => {
                 const html = quill.root.innerHTML.trim();

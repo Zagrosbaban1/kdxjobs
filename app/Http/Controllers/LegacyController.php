@@ -63,11 +63,12 @@ class LegacyController extends Controller
 
         $basePath = rtrim($request->getBasePath(), '/');
         $nativeFiles = $_FILES;
+        $legacyTempFiles = [];
 
         // Feed the old app the same inputs it expects while letting Laravel host it.
         $_GET = $request->query->all();
         $_POST = $request->request->all();
-        $normalizedFiles = $this->normalizeFiles($request->files->all());
+        $normalizedFiles = $this->normalizeFiles($request->files->all(), $legacyTempFiles);
         $_FILES = array_replace($nativeFiles, $normalizedFiles);
         $_REQUEST = array_merge($_GET, $_POST);
         $_SERVER['SCRIPT_NAME'] = $basePath . $scriptName;
@@ -100,23 +101,43 @@ class LegacyController extends Controller
             ini_set('session.save_path', $sessionPath);
         }
 
-        ob_start();
-        require $legacyEntry;
-        $content = ob_get_clean();
+        try {
+            ob_start();
+            require $legacyEntry;
+            $content = ob_get_clean();
+        } finally {
+            $_FILES = $nativeFiles;
+            foreach ($legacyTempFiles as $tempFile) {
+                if (is_file($tempFile)) {
+                    @unlink($tempFile);
+                }
+            }
+        }
 
         return response($content);
     }
 
-    private function normalizeFiles(array $files): array
+    private function normalizeFiles(array $files, array &$legacyTempFiles): array
     {
         $normalized = [];
 
         foreach ($files as $key => $file) {
             if ($file instanceof UploadedFile) {
+                $sourcePath = $file->getRealPath();
+                $legacyTempPath = null;
+                if (is_string($sourcePath) && is_file($sourcePath)) {
+                    $legacyTempPath = tempnam(sys_get_temp_dir(), 'legacy_upload_');
+                    if (is_string($legacyTempPath) && copy($sourcePath, $legacyTempPath)) {
+                        $legacyTempFiles[] = $legacyTempPath;
+                    } else {
+                        $legacyTempPath = $sourcePath;
+                    }
+                }
+
                 $normalized[$key] = [
                     'name' => $file->getClientOriginalName(),
                     'type' => $file->getClientMimeType(),
-                    'tmp_name' => $file->getRealPath(),
+                    'tmp_name' => $legacyTempPath ?? $sourcePath,
                     'error' => $file->getError(),
                     'size' => $file->getSize(),
                 ];
@@ -124,7 +145,7 @@ class LegacyController extends Controller
             }
 
             if (is_array($file)) {
-                $normalized[$key] = $this->normalizeFiles($file);
+                $normalized[$key] = $this->normalizeFiles($file, $legacyTempFiles);
             }
         }
 

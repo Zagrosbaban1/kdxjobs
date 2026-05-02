@@ -49,6 +49,7 @@ defined('DB_PASS') || define('DB_PASS', (string) ($localConfig['db_pass'] ?? get
 defined('APP_NAME') || define('APP_NAME', (string) ($localConfig['app_name'] ?? getenv('RECRU_APP_NAME') ?: legacy_env_value('APP_NAME') ?: 'KDXJobs'));
 defined('APP_EMAIL_FROM') || define('APP_EMAIL_FROM', (string) ($localConfig['app_email_from'] ?? getenv('RECRU_APP_EMAIL_FROM') ?: legacy_env_value('MAIL_FROM_ADDRESS') ?: 'no-reply@kdxjobs.local'));
 defined('APP_EMAIL_REPLY_TO') || define('APP_EMAIL_REPLY_TO', (string) ($localConfig['app_email_reply_to'] ?? getenv('RECRU_APP_EMAIL_REPLY_TO') ?: legacy_env_value('MAIL_FROM_ADDRESS') ?: 'support@kdxjobs.local'));
+defined('APP_MAIL_MAILER') || define('APP_MAIL_MAILER', (string) ($localConfig['app_mail_mailer'] ?? getenv('RECRU_MAIL_MAILER') ?: legacy_env_value('MAIL_MAILER') ?: 'log'));
 defined('OPENAI_API_KEY') || define('OPENAI_API_KEY', (string) ($localConfig['openai_api_key'] ?? legacy_env_value('OPENAI_API_KEY') ?? ''));
 defined('OPENAI_CV_MODEL') || define('OPENAI_CV_MODEL', (string) ($localConfig['openai_cv_model'] ?? legacy_env_value('OPENAI_CV_MODEL') ?? 'gpt-5.2'));
 defined('OPENAI_BASE_URL') || define('OPENAI_BASE_URL', (string) ($localConfig['openai_base_url'] ?? legacy_env_value('OPENAI_BASE_URL') ?? 'https://api.openai.com/v1'));
@@ -78,7 +79,7 @@ function apply_security_headers(bool $isApi = false): void
         . "default-src 'self'; "
         . "script-src 'self' https://cdn.ckeditor.com https://cdn.jsdelivr.net; "
         . "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
-        . "img-src 'self' data:; "
+        . "img-src 'self' data: https:; "
         . "font-src 'self' data:; "
         . "connect-src 'self'; "
         . "frame-ancestors 'none'; "
@@ -212,7 +213,7 @@ function ensure_upload_directory_security(string $uploadDir): void
     }
 }
 
-function upload_file(string $field, array $allowedExtensions, ?int $maxBytes = null): ?string
+function upload_file(string $field, array $allowedExtensions, ?int $maxBytes = null, string $filenamePrefix = 'upload_'): ?string
 {
     if (!isset($_FILES[$field])) {
         return null;
@@ -267,7 +268,8 @@ function upload_file(string $field, array $allowedExtensions, ?int $maxBytes = n
     $uploadDir = defined('UPLOAD_PUBLIC_ROOT') ? (string) UPLOAD_PUBLIC_ROOT : dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads';
     ensure_upload_directory_security($uploadDir);
 
-    $filename = uniqid('upload_', true) . '.' . $extension;
+    $safePrefix = preg_replace('/[^a-z0-9_-]/i', '', $filenamePrefix) ?: 'upload_';
+    $filename = uniqid($safePrefix, true) . '.' . $extension;
     $target = $uploadDir . DIRECTORY_SEPARATOR . $filename;
 
     if (!move_uploaded_file($tmpName, $target)) {

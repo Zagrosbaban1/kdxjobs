@@ -164,9 +164,38 @@ function rich_text_html(?string $value): string
         return nl2br(h($value));
     }
 
-    $allowed = '<p><br><ul><ol><li><strong><b><em><i><u><h3><h4><blockquote>';
+    $allowed = '<p><br><ul><ol><li><strong><b><em><i><u><h3><h4><blockquote><img>';
     $clean = strip_tags($value, $allowed);
+    $images = [];
+    $clean = preg_replace_callback('/<img\b([^>]*)>/i', static function (array $matches) use (&$images): string {
+        $attrs = $matches[1] ?? '';
+        $src = '';
+        $alt = '';
+
+        if (preg_match('/\bsrc\s*=\s*([\'"])(.*?)\1/i', $attrs, $srcMatch)) {
+            $src = trim(html_entity_decode($srcMatch[2], ENT_QUOTES, 'UTF-8'));
+        }
+        if (preg_match('/\balt\s*=\s*([\'"])(.*?)\1/i', $attrs, $altMatch)) {
+            $alt = trim(html_entity_decode($altMatch[2], ENT_QUOTES, 'UTF-8'));
+        }
+
+        $isSafeSrc = str_starts_with($src, 'uploads/')
+            || str_starts_with($src, app_base_path() . '/index.php?page=download')
+            || preg_match('/^https:\/\//i', $src)
+            || preg_match('/^data:image\/(?:png|jpe?g|webp|gif);base64,[a-z0-9+\/=\s]+$/i', $src);
+
+        if ($src === '' || !$isSafeSrc) {
+            return '';
+        }
+
+        $token = '%%KDX_IMG_' . count($images) . '%%';
+        $images[$token] = '<img src="' . h($src) . '" alt="' . h($alt) . '" loading="lazy">';
+        return $token;
+    }, $clean) ?? $clean;
     $clean = preg_replace('/<([a-z][a-z0-9]*)\b[^>]*>/i', '<$1>', $clean) ?? $clean;
+    if ($images) {
+        $clean = strtr($clean, $images);
+    }
 
     return $clean;
 }
@@ -231,7 +260,21 @@ function is_allowed_application_status(string $status): bool
 function can_access_uploaded_file(PDO $pdo, string $path): bool
 {
     $path = trim($path);
-    if ($path === '' || !isset($_SESSION['user']['id'])) {
+    if ($path === '') {
+        return false;
+    }
+
+    $publicBlogStmt = $pdo->prepare("SELECT id FROM blog_posts WHERE cover_image = :path AND status = 'published' LIMIT 1");
+    $publicBlogStmt->execute([':path' => $path]);
+    if ($publicBlogStmt->fetchColumn()) {
+        return true;
+    }
+
+    if (preg_match('/^uploads\/blog_editor_[a-z0-9.,_-]+\.(?:png|jpe?g|webp)$/i', $path)) {
+        return true;
+    }
+
+    if (!isset($_SESSION['user']['id'])) {
         return false;
     }
 
@@ -244,10 +287,22 @@ function can_access_uploaded_file(PDO $pdo, string $path): bool
         return true;
     }
 
+    $blogStmt = $pdo->prepare("SELECT id FROM blog_posts WHERE cover_image = :path AND (status = 'published' OR author_id = :user_id) LIMIT 1");
+    $blogStmt->execute([':path' => $path, ':user_id' => $userId]);
+    if ($blogStmt->fetchColumn()) {
+        return true;
+    }
+
     if (in_array($role, ['admin', 'superadmin'], true)) {
         $adminStmt = $pdo->prepare('SELECT id FROM applications WHERE cv_file = :path LIMIT 1');
         $adminStmt->execute([':path' => $path]);
         if ($adminStmt->fetchColumn()) {
+            return true;
+        }
+
+        $adminBlogStmt = $pdo->prepare('SELECT id FROM blog_posts WHERE cover_image = :path LIMIT 1');
+        $adminBlogStmt->execute([':path' => $path]);
+        if ($adminBlogStmt->fetchColumn()) {
             return true;
         }
     }
@@ -312,8 +367,17 @@ function serve_uploaded_file(PDO $pdo, string $relativePath): never
         exit('File not found.');
     }
 
+    $extension = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));
+    $contentTypes = [
+        'pdf' => 'application/pdf',
+        'png' => 'image/png',
+        'jpg' => 'image/jpeg',
+        'jpeg' => 'image/jpeg',
+        'webp' => 'image/webp',
+    ];
+
     header_remove('Content-Security-Policy');
-    header('Content-Type: application/pdf');
+    header('Content-Type: ' . ($contentTypes[$extension] ?? 'application/octet-stream'));
     header('Content-Length: ' . (string) filesize($filePath));
     header('Content-Disposition: inline; filename="' . rawurlencode(basename($filePath)) . '"');
     header('X-Content-Type-Options: nosniff');
@@ -342,9 +406,14 @@ function send_app_email(string $to, string $subject, string $body): bool
         return false;
     }
 
+    if (app_setting('email_notifications_enabled', '1') !== '1') {
+        return false;
+    }
+
     $from = defined('APP_EMAIL_FROM') ? APP_EMAIL_FROM : 'no-reply@kdxjobs.local';
     $replyTo = defined('APP_EMAIL_REPLY_TO') ? APP_EMAIL_REPLY_TO : $from;
     $appName = defined('APP_NAME') ? APP_NAME : 'KDXJobs';
+    $mailer = strtolower(app_mailer_name());
     $headers = [
         'MIME-Version: 1.0',
         'Content-Type: text/plain; charset=UTF-8',
@@ -353,7 +422,41 @@ function send_app_email(string $to, string $subject, string $body): bool
         'X-Mailer: PHP/' . phpversion(),
     ];
 
-    return @mail($to, $subject, $body, implode("\r\n", $headers));
+    if (in_array($mailer, ['log', 'array'], true)) {
+        return false;
+    }
+
+    $sent = false;
+    if (function_exists('app')) {
+        try {
+            app('mailer')->raw($body, static function ($message) use ($to, $subject, $from, $appName, $replyTo): void {
+                $message->to($to)
+                    ->subject($subject)
+                    ->from($from, $appName)
+                    ->replyTo($replyTo);
+            });
+            $sent = true;
+        } catch (Throwable) {
+            $sent = false;
+        }
+    }
+
+    if (!$sent) {
+        $sent = @mail($to, $subject, $body, implode("\r\n", $headers));
+    }
+
+    return $sent;
+}
+
+function app_mailer_name(): string
+{
+    $mailer = trim((string) (defined('APP_MAIL_MAILER') ? APP_MAIL_MAILER : 'log'));
+    return $mailer !== '' ? $mailer : 'log';
+}
+
+function app_mailer_is_local_log(): bool
+{
+    return in_array(strtolower(app_mailer_name()), ['log', 'array'], true);
 }
 
 function app_email_greeting(?string $name, string $fallback = 'there'): string
@@ -465,6 +568,17 @@ function send_application_received_emails(PDO $pdo, int $applicationId): void
             "Hello,\n\nA new application has been submitted for {$jobTitle} by {$candidateName}.\n\nPlease sign in to KDXJobs to review the candidate details.\n\nKDXJobs Team"
         );
     }
+}
+
+function send_welcome_email(string $email, ?string $name, string $role): void
+{
+    $roleLabel = $role === 'company' ? 'company account' : 'job seeker account';
+    $displayName = app_email_greeting($name);
+    send_app_email(
+        $email,
+        'KDXJobs: welcome',
+        "Hello {$displayName},\n\nYour {$roleLabel} has been created successfully.\n\nYou can now sign in to KDXJobs and continue setting up your profile.\n\nKDXJobs Team"
+    );
 }
 
 function add_application_event(PDO $pdo, int $applicationId, string $type, string $title, string $note = ''): void
@@ -718,7 +832,8 @@ try {
             author_id INT NULL,
             title VARCHAR(180) NOT NULL,
             excerpt VARCHAR(255) NULL,
-            content TEXT NOT NULL,
+            content MEDIUMTEXT NOT NULL,
+            cover_image VARCHAR(255) NULL,
             category VARCHAR(80) NULL,
             status ENUM('draft', 'published') NOT NULL DEFAULT 'published',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -772,6 +887,7 @@ try {
         )"
     );
     $pdo->exec("INSERT IGNORE INTO app_settings (setting_key, setting_value) VALUES ('ai_matching_mode', 'balanced')");
+    $pdo->exec("INSERT IGNORE INTO app_settings (setting_key, setting_value) VALUES ('email_notifications_enabled', '1')");
     $pdo->exec("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS expires_at DATE NULL AFTER status");
     $pdo->exec("UPDATE jobs SET status = 'closed' WHERE expires_at IS NOT NULL AND expires_at < CURDATE() AND status <> 'closed'");
     $pdo->exec("ALTER TABLE applications MODIFY status ENUM('New', 'Reviewed', 'Shortlisted', 'Interview', 'Accepted', 'Rejected') NOT NULL DEFAULT 'New'");
@@ -782,6 +898,8 @@ try {
     $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS cv_ai_json JSON NULL AFTER cv_ai_summary");
     $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS cv_ai_updated_at TIMESTAMP NULL DEFAULT NULL AFTER cv_ai_summary");
     $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_photo VARCHAR(255) NULL AFTER logo_file");
+    $pdo->exec("ALTER TABLE blog_posts MODIFY content MEDIUMTEXT NOT NULL");
+    $pdo->exec("ALTER TABLE blog_posts ADD COLUMN IF NOT EXISTS cover_image VARCHAR(255) NULL AFTER content");
     $pdo->exec("ALTER TABLE applications ADD COLUMN IF NOT EXISTS cv_ai_skills TEXT NULL AFTER cv_file");
     $pdo->exec("ALTER TABLE applications ADD COLUMN IF NOT EXISTS cv_ai_years INT NULL AFTER cv_ai_skills");
     $pdo->exec("ALTER TABLE applications ADD COLUMN IF NOT EXISTS cv_ai_summary TEXT NULL AFTER cv_ai_years");
@@ -896,8 +1014,26 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
             enforce_rate_limit('web_contact_message', 5, 600);
         } elseif ($action === 'send_service_message') {
             enforce_rate_limit('web_service_message', 20, 300);
-        } elseif (in_array($action, ['application_status', 'edit_application', 'schedule_interview', 'post_job', 'update_password', 'update_ai_screening_settings', 'rescreen_application_ai'], true)) {
+        } elseif ($action === 'upload_blog_editor_image') {
+            enforce_rate_limit('web_blog_editor_image', 30, 600);
+        } elseif (in_array($action, ['application_status', 'edit_application', 'schedule_interview', 'post_job', 'update_password', 'update_ai_screening_settings', 'rescreen_application_ai', 'update_blog_post', 'delete_blog_post'], true)) {
             enforce_rate_limit('web_sensitive_' . $action, 20, 600);
+        }
+
+        if ($action === 'upload_blog_editor_image') {
+            if (!is_admin_role()) {
+                json_response(['ok' => false, 'error' => 'Admin access required.'], 403);
+            }
+
+            $imagePath = upload_file('editor_image', ['png', 'jpg', 'jpeg', 'webp'], 2 * 1024 * 1024, 'blog_editor_');
+            if (!$imagePath) {
+                json_response(['ok' => false, 'error' => 'Please choose an image.'], 422);
+            }
+
+            json_response([
+                'ok' => true,
+                'url' => download_url($imagePath),
+            ]);
         }
 
         if ($action === 'login') {
@@ -976,6 +1112,7 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':location' => field('location'),
                 ]);
             }
+            send_welcome_email(field('email'), $role === 'company' ? field('company_name') : field('full_name'), $role);
             go('login', 'Account created. You can login now.');
         }
 
@@ -984,6 +1121,26 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 go('login', 'Please login or register before applying to a job.');
             }
             need(['job_id', 'applicant_name', 'applicant_email', 'role']);
+            $jobId = (int) field('job_id');
+            $userId = (int) ($_SESSION['user']['id'] ?? 0);
+            $applicantEmail = strtolower(trim(field('applicant_email')));
+            $duplicateStmt = $pdo->prepare(
+                'SELECT id, status
+                 FROM applications
+                 WHERE job_id = :job_id
+                   AND (user_id = :user_id OR LOWER(applicant_email) = :email)
+                 LIMIT 1'
+            );
+            $duplicateStmt->execute([
+                ':job_id' => $jobId,
+                ':user_id' => $userId,
+                ':email' => $applicantEmail,
+            ]);
+            $existingApplication = $duplicateStmt->fetch();
+            if (is_array($existingApplication)) {
+                go('jobs', 'You already applied for this job. Track your existing application instead.', ['job' => $jobId]);
+            }
+
             $cvChoice = field('cv_option', 'saved');
             $savedCv = trim((string) ($_SESSION['user']['cv_file'] ?? ''));
             $applicationCv = null;
@@ -1005,8 +1162,8 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
                  VALUES (:job_id, :user_id, :applicant_name, :applicant_email, :applicant_phone, :role, :cover_note, :cv_file, :cv_ai_skills, :cv_ai_years, :cv_ai_summary, :cv_ai_json, :cv_text)'
             );
             $stmt->execute([
-                ':job_id' => (int) field('job_id'),
-                ':user_id' => isset($_SESSION['user']['id']) ? (int) $_SESSION['user']['id'] : null,
+                ':job_id' => $jobId,
+                ':user_id' => $userId,
                 ':applicant_name' => field('applicant_name'),
                 ':applicant_email' => field('applicant_email'),
                 ':applicant_phone' => field('applicant_phone') ?: null,
@@ -1707,19 +1864,59 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new RuntimeException('Admin access required to publish blog posts.');
             }
             need(['title', 'content']);
+            $coverImage = upload_file('cover_image', ['png', 'jpg', 'jpeg', 'webp'], 4 * 1024 * 1024);
             $stmt = $pdo->prepare(
-                'INSERT INTO blog_posts (author_id, title, excerpt, content, category, status)
-                 VALUES (:author_id, :title, :excerpt, :content, :category, :status)'
+                'INSERT INTO blog_posts (author_id, title, excerpt, content, cover_image, category, status)
+                 VALUES (:author_id, :title, :excerpt, :content, :cover_image, :category, :status)'
             );
             $stmt->execute([
                 ':author_id' => (int) ($_SESSION['user']['id'] ?? 0) ?: null,
                 ':title' => field('title'),
                 ':excerpt' => field('excerpt') ?: null,
                 ':content' => field('content'),
+                ':cover_image' => $coverImage,
                 ':category' => field('category', 'Career Advice') ?: 'Career Advice',
                 ':status' => field('status') === 'draft' ? 'draft' : 'published',
             ]);
             go('admin', 'Blog post saved.', ['tab' => 'blog']);
+        }
+
+        if ($action === 'update_blog_post') {
+            if (!is_admin_role()) {
+                throw new RuntimeException('Admin access required to edit blog posts.');
+            }
+            need(['blog_post_id', 'title', 'content']);
+            $coverImage = upload_file('cover_image', ['png', 'jpg', 'jpeg', 'webp'], 4 * 1024 * 1024);
+            $stmt = $pdo->prepare(
+                'UPDATE blog_posts
+                 SET title = :title,
+                     excerpt = :excerpt,
+                     content = :content,
+                     cover_image = COALESCE(:cover_image, cover_image),
+                     category = :category,
+                     status = :status
+                 WHERE id = :id'
+            );
+            $stmt->execute([
+                ':id' => (int) field('blog_post_id'),
+                ':title' => field('title'),
+                ':excerpt' => field('excerpt') ?: null,
+                ':content' => field('content'),
+                ':cover_image' => $coverImage,
+                ':category' => field('category', 'Career Advice') ?: 'Career Advice',
+                ':status' => field('status') === 'draft' ? 'draft' : 'published',
+            ]);
+            go('admin', 'Blog post updated.', ['tab' => 'blog']);
+        }
+
+        if ($action === 'delete_blog_post') {
+            if (!is_admin_role()) {
+                throw new RuntimeException('Admin access required to delete blog posts.');
+            }
+            need(['blog_post_id']);
+            $stmt = $pdo->prepare('DELETE FROM blog_posts WHERE id = :id');
+            $stmt->execute([':id' => (int) field('blog_post_id')]);
+            go('admin', 'Blog post deleted.', ['tab' => 'blog']);
         }
 
         if ($action === 'update_profile') {
@@ -1800,6 +1997,7 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
             $redirectTab = field('redirect_tab', 'settings');
             go($redirectPage, 'AI screening mode changed to ' . ai_matching_mode_label($mode) . '. Existing match scores will refresh with the new mode.', ['tab' => $redirectTab]);
         }
+
     } catch (Throwable $exception) {
         $error = $exception->getMessage();
     }
@@ -2210,6 +2408,111 @@ function job_title_options(): array
         'Supervisor',
         'Warehouse Officer',
     ];
+}
+
+function job_screening_template(array $application): array
+{
+    $title = strtolower((string) ($application['job_title'] ?? $application['title'] ?? $application['role'] ?? ''));
+    $templates = [
+        'accounting' => [
+            'name' => 'Accounting / Finance',
+            'patterns' => ['accountant', 'finance officer', 'accounting', 'finance'],
+            'criteria' => [
+                ['requirement' => 'Accounting or finance experience', 'category' => 'Domain', 'keywords' => ['accounting', 'accountant', 'finance', 'financial', 'bookkeeping', 'ledger'], 'must' => true],
+                ['requirement' => 'Excel', 'category' => 'Tool', 'keywords' => ['excel', 'spreadsheet', 'pivot', 'vlookup', 'xlookup'], 'must' => true],
+                ['requirement' => 'Tax or VAT', 'category' => 'Compliance', 'keywords' => ['tax', 'vat', 'withholding', 'compliance'], 'must' => false],
+                ['requirement' => 'Payroll or payments', 'category' => 'Finance operations', 'keywords' => ['payroll', 'salary', 'payment', 'invoice', 'accounts payable', 'accounts receivable'], 'must' => false],
+                ['requirement' => 'Reconciliation', 'category' => 'Accounting control', 'keywords' => ['reconciliation', 'bank reconciliation', 'closing', 'month end', 'balance'], 'must' => true],
+                ['requirement' => 'Financial reporting', 'category' => 'Reporting', 'keywords' => ['financial report', 'reporting', 'budget', 'forecast', 'statement'], 'must' => false],
+            ],
+        ],
+        'security' => [
+            'name' => 'Security Management',
+            'patterns' => ['security manager', 'security supervisor', 'security officer', 'safety manager'],
+            'criteria' => [
+                ['requirement' => 'Security operations', 'category' => 'Domain', 'keywords' => ['security operations', 'security', 'guard', 'patrol', 'surveillance'], 'must' => true],
+                ['requirement' => 'Risk assessment', 'category' => 'Risk', 'keywords' => ['risk assessment', 'risk', 'threat', 'vulnerability', 'hazard'], 'must' => true],
+                ['requirement' => 'Incident reporting', 'category' => 'Operations', 'keywords' => ['incident', 'incident report', 'investigation', 'emergency', 'response'], 'must' => true],
+                ['requirement' => 'Team leadership', 'category' => 'Leadership', 'keywords' => ['team leader', 'supervisor', 'leadership', 'managed team', 'staff management'], 'must' => true],
+                ['requirement' => 'Access control or CCTV', 'category' => 'Systems', 'keywords' => ['access control', 'cctv', 'monitoring', 'camera', 'badge'], 'must' => false],
+                ['requirement' => 'Safety / HSE awareness', 'category' => 'Safety', 'keywords' => ['safety', 'hse', 'health and safety', 'fire safety', 'first aid'], 'must' => false],
+            ],
+        ],
+        'developer' => [
+            'name' => 'Software / Developer',
+            'patterns' => ['software engineer', 'developer', 'programmer', 'web developer', 'full stack', 'backend', 'frontend'],
+            'criteria' => [
+                ['requirement' => 'Programming stack', 'category' => 'Technical', 'keywords' => ['php', 'laravel', 'javascript', 'react', 'python', 'java', 'node', 'html', 'css'], 'must' => true],
+                ['requirement' => 'Projects or shipped work', 'category' => 'Evidence', 'keywords' => ['project', 'portfolio', 'github', 'built', 'developed', 'implemented'], 'must' => true],
+                ['requirement' => 'Database work', 'category' => 'Technical', 'keywords' => ['sql', 'mysql', 'database', 'postgres', 'query'], 'must' => false],
+                ['requirement' => 'API integration', 'category' => 'Technical', 'keywords' => ['api', 'rest', 'integration', 'endpoint', 'json'], 'must' => false],
+                ['requirement' => 'Version control', 'category' => 'Workflow', 'keywords' => ['git', 'github', 'gitlab', 'version control'], 'must' => false],
+                ['requirement' => 'Debugging / problem solving', 'category' => 'Workflow', 'keywords' => ['debug', 'troubleshoot', 'problem solving', 'testing', 'unit test'], 'must' => false],
+            ],
+        ],
+        'data' => [
+            'name' => 'Data Analysis',
+            'patterns' => ['data analyst', 'business analyst', 'analytics', 'reporting analyst'],
+            'criteria' => [
+                ['requirement' => 'SQL', 'category' => 'Technical', 'keywords' => ['sql', 'mysql', 'query', 'database'], 'must' => true],
+                ['requirement' => 'Excel', 'category' => 'Tool', 'keywords' => ['excel', 'spreadsheet', 'pivot', 'vlookup', 'xlookup'], 'must' => true],
+                ['requirement' => 'Power BI or Tableau', 'category' => 'BI tool', 'keywords' => ['power bi', 'tableau', 'dashboard', 'visualization'], 'must' => true],
+                ['requirement' => 'KPI reporting', 'category' => 'Reporting', 'keywords' => ['kpi', 'reporting', 'dashboarding', 'metrics'], 'must' => false],
+                ['requirement' => 'Data cleaning / analysis', 'category' => 'Analysis', 'keywords' => ['data cleaning', 'data analysis', 'analytics', 'insight'], 'must' => false],
+            ],
+        ],
+    ];
+
+    foreach ($templates as $template) {
+        foreach ($template['patterns'] as $pattern) {
+            if ($title !== '' && str_contains($title, $pattern)) {
+                return $template;
+            }
+        }
+    }
+
+    return ['name' => 'General role', 'patterns' => [], 'criteria' => []];
+}
+
+function job_template_signals(array $template): array
+{
+    return normalize_skill_list(array_map(static fn(array $criterion): string => (string) ($criterion['requirement'] ?? ''), $template['criteria'] ?? []));
+}
+
+function evaluate_job_template_criteria(array $template, string $candidateText, array $candidateSkills, array $candidateScreen): array
+{
+    $haystack = strtolower(implode(' ', array_filter([
+        $candidateText,
+        implode(' ', $candidateSkills),
+        implode(' ', normalize_text_list($candidateScreen['skills'] ?? [])),
+        implode(' ', normalize_text_list($candidateScreen['tools'] ?? [])),
+        implode(' ', normalize_text_list($candidateScreen['roles'] ?? [])),
+        implode(' ', normalize_text_list($candidateScreen['industries'] ?? [])),
+        (string) ($candidateScreen['summary'] ?? ''),
+    ])));
+    $hasEvidence = trim($haystack) !== '';
+    $items = [];
+
+    foreach (($template['criteria'] ?? []) as $criterion) {
+        $keywords = normalize_text_list($criterion['keywords'] ?? []);
+        $matched = [];
+        foreach ($keywords as $keyword) {
+            if ($haystack !== '' && str_contains($haystack, strtolower($keyword))) {
+                $matched[] = $keyword;
+            }
+        }
+        $status = $matched ? 'Met' : ($hasEvidence ? 'Missing' : 'Unknown');
+        $items[] = [
+            'requirement' => (string) ($criterion['requirement'] ?? 'Template requirement'),
+            'category' => (string) ($criterion['category'] ?? 'Role template'),
+            'status' => $status,
+            'evidence' => $matched ? 'Matched: ' . implode(', ', array_slice($matched, 0, 4)) . '.' : (($criterion['must'] ?? false) ? 'Must-have signal not clearly detected.' : 'Helpful signal not clearly detected.'),
+            'must' => (bool) ($criterion['must'] ?? false),
+            'template' => (string) ($template['name'] ?? 'Role template'),
+        ];
+    }
+
+    return $items;
 }
 
 function job_location_options(): array
@@ -2686,6 +2989,161 @@ function profile_score(array $user): int
         }
     }
     return (int) round(($complete / count($fields)) * 100);
+}
+
+function profile_missing_items(array $user): array
+{
+    $checks = [
+        'Add your full name' => $user['full_name'] ?? '',
+        'Add your phone number' => $user['phone'] ?? '',
+        'Choose your skills' => $user['skills'] ?? '',
+        'Add your location' => $user['location'] ?? '',
+        'Upload your CV' => $user['cv_file'] ?? '',
+        'Upload a profile photo' => $user['profile_photo'] ?? '',
+    ];
+    $missing = [];
+    foreach ($checks as $label => $value) {
+        if (trim((string) $value) === '') {
+            $missing[] = $label;
+        }
+    }
+
+    return $missing;
+}
+
+function candidate_profile_tasks(array $user): array
+{
+    return [
+        ['label' => 'Name', 'detail' => 'Use your real full name for applications.', 'done' => trim((string) ($user['full_name'] ?? '')) !== ''],
+        ['label' => 'Phone', 'detail' => 'Add a number recruiters can use for interview updates.', 'done' => trim((string) ($user['phone'] ?? '')) !== ''],
+        ['label' => 'Location', 'detail' => 'Help match you with nearby, remote, or hybrid roles.', 'done' => trim((string) ($user['location'] ?? '')) !== ''],
+        ['label' => 'Skills', 'detail' => 'Pick skills so recommendations and screening are more accurate.', 'done' => trim((string) ($user['skills'] ?? '')) !== ''],
+        ['label' => 'CV', 'detail' => 'Upload a PDF CV so applications are ready to send.', 'done' => trim((string) ($user['cv_file'] ?? '')) !== ''],
+        ['label' => 'Photo', 'detail' => 'A clear photo makes the account easier to recognize.', 'done' => trim((string) ($user['profile_photo'] ?? '')) !== ''],
+    ];
+}
+
+function company_profile_tasks(array $user): array
+{
+    return [
+        ['label' => 'Company name', 'detail' => 'Show candidates who is hiring.', 'done' => trim((string) ($user['company_name'] ?? '')) !== ''],
+        ['label' => 'Industry', 'detail' => 'Help candidates understand your field.', 'done' => trim((string) ($user['industry'] ?? '')) !== ''],
+        ['label' => 'Location', 'detail' => 'Set hiring location or remote availability.', 'done' => trim((string) ($user['location'] ?? '')) !== ''],
+        ['label' => 'Phone', 'detail' => 'Keep a company contact number available.', 'done' => trim((string) ($user['phone'] ?? '')) !== ''],
+        ['label' => 'Logo/photo', 'detail' => 'Use a recognizable brand image.', 'done' => trim((string) ($user['profile_photo'] ?? '')) !== ''],
+    ];
+}
+
+function recommended_jobs_for_user(array $jobs, array $user, array $applications, array $savedJobIds, int $limit = 4): array
+{
+    $appliedJobIds = array_map(static fn(array $application): int => (int) ($application['job_id'] ?? 0), $applications);
+    $userSkills = array_map('strtolower', selected_skills($user['skills'] ?? ''));
+    $userLocation = strtolower(trim((string) ($user['location'] ?? '')));
+    $ranked = [];
+
+    foreach ($jobs as $job) {
+        $jobId = (int) ($job['id'] ?? 0);
+        if (($job['status'] ?? 'active') !== 'active' || in_array($jobId, $appliedJobIds, true) || in_array($jobId, $savedJobIds, true)) {
+            continue;
+        }
+
+        $jobTags = array_map('strtolower', tags($job));
+        $haystack = strtolower(implode(' ', [
+            $job['title'] ?? '',
+            $job['company'] ?? '',
+            $job['industry'] ?? '',
+            $job['description'] ?? '',
+            $job['requirements'] ?? '',
+            $job['tags'] ?? '',
+        ]));
+        $score = 0;
+        foreach ($userSkills as $skill) {
+            if ($skill !== '' && (in_array($skill, $jobTags, true) || str_contains($haystack, $skill))) {
+                $score += 3;
+            }
+        }
+        if ($userLocation !== '' && str_contains(strtolower((string) ($job['location'] ?? '')), $userLocation)) {
+            $score += 2;
+        }
+        if ($score === 0 && $userSkills) {
+            continue;
+        }
+
+        $job['_recommendation_score'] = $score;
+        $ranked[] = $job;
+    }
+
+    usort($ranked, static function (array $a, array $b): int {
+        $scoreCompare = ((int) ($b['_recommendation_score'] ?? 0)) <=> ((int) ($a['_recommendation_score'] ?? 0));
+        return $scoreCompare !== 0 ? $scoreCompare : strcmp((string) ($b['created_at'] ?? ''), (string) ($a['created_at'] ?? ''));
+    });
+
+    return array_slice($ranked, 0, $limit);
+}
+
+function similar_jobs_for_job(array $jobs, array $selectedJob, int $limit = 3): array
+{
+    $selectedTags = array_map('strtolower', tags($selectedJob));
+    $ranked = [];
+
+    foreach ($jobs as $job) {
+        if ((int) ($job['id'] ?? 0) === (int) ($selectedJob['id'] ?? 0) || ($job['status'] ?? 'active') !== 'active') {
+            continue;
+        }
+
+        $score = 0;
+        if (($job['type'] ?? '') === ($selectedJob['type'] ?? '')) {
+            $score += 3;
+        }
+        if (($job['location'] ?? '') === ($selectedJob['location'] ?? '')) {
+            $score += 2;
+        }
+        if (($job['industry'] ?? '') === ($selectedJob['industry'] ?? '')) {
+            $score += 2;
+        }
+        $sharedTags = array_intersect($selectedTags, array_map('strtolower', tags($job)));
+        $score += count($sharedTags) * 2;
+
+        if ($score <= 0) {
+            continue;
+        }
+
+        $job['_similarity_score'] = $score;
+        $ranked[] = $job;
+    }
+
+    usort($ranked, static function (array $a, array $b): int {
+        $scoreCompare = ((int) ($b['_similarity_score'] ?? 0)) <=> ((int) ($a['_similarity_score'] ?? 0));
+        return $scoreCompare !== 0 ? $scoreCompare : strcmp((string) ($b['created_at'] ?? ''), (string) ($a['created_at'] ?? ''));
+    });
+
+    return array_slice($ranked, 0, $limit);
+}
+
+function job_match_insights(array $job, array $user): array
+{
+    $userSkills = selected_skills($user['skills'] ?? '');
+    $jobTags = tags($job);
+    $normalizedUserSkills = array_map('strtolower', $userSkills);
+    $matchedSkills = [];
+    $missingSkills = [];
+
+    foreach ($jobTags as $tag) {
+        if (in_array(strtolower($tag), $normalizedUserSkills, true)) {
+            $matchedSkills[] = $tag;
+        } else {
+            $missingSkills[] = $tag;
+        }
+    }
+
+    return [
+        'matched_skills' => array_slice($matchedSkills, 0, 6),
+        'missing_skills' => array_slice($missingSkills, 0, 4),
+        'location_match' => trim((string) ($user['location'] ?? '')) !== ''
+            && str_contains(strtolower((string) ($job['location'] ?? '')), strtolower((string) $user['location'])),
+        'has_cv' => trim((string) ($user['cv_file'] ?? '')) !== '',
+        'profile_score' => profile_score($user),
+    ];
 }
 
 function selected_skills(?string $skills): array
@@ -3676,7 +4134,8 @@ function job_match_signals(array $application): array
         $application['job_description'] ?? '',
     ])));
 
-    $signals = $jobTags;
+    $template = job_screening_template($application);
+    $signals = array_merge($jobTags, job_template_signals($template));
     foreach (skill_options() as $skill) {
         if ($jobText !== '' && str_contains($jobText, strtolower($skill))) {
             $signals[] = $skill;
@@ -3700,6 +4159,9 @@ function cached_ai_job_match(array $application): ?array
 
     $currentMode = ai_matching_mode();
     if (($stored['matching_mode'] ?? '') !== $currentMode) {
+        return null;
+    }
+    if ((int) ($stored['screening_template_version'] ?? 0) < 1) {
         return null;
     }
 
@@ -3732,6 +4194,13 @@ function openai_cv_job_match(array $application, array $candidateScreen, array $
     }
 
     $matchingMode = ai_matching_mode();
+    $template = job_screening_template($application);
+    $templateCriteria = $template['criteria'] ?? [];
+    $templateText = $templateCriteria
+        ? "Role-specific screening template: " . ($template['name'] ?? 'General role') . "\nCriteria:\n" . implode("\n", array_map(static function (array $criterion): string {
+            return '- ' . (string) ($criterion['requirement'] ?? '') . ' [' . (string) ($criterion['category'] ?? 'Check') . '] ' . (!empty($criterion['must']) ? 'MUST-HAVE' : 'nice-to-have') . '. Keywords: ' . implode(', ', normalize_text_list($criterion['keywords'] ?? []));
+        }, $templateCriteria))
+        : 'Role-specific screening template: General role. Use the job description and tags as criteria.';
     $modeInstruction = match ($matchingMode) {
         'strict' => 'Use strict matching: require direct evidence for core requirements, penalize missing must-have skills, seniority, education, and experience gaps strongly, and avoid high scores for adjacent experience.',
         'flexible' => 'Use flexible matching: reward transferable skills, adjacent domain experience, growth potential, and partial matches while still naming important gaps.',
@@ -3784,12 +4253,12 @@ function openai_cv_job_match(array $application, array $candidateScreen, array $
     $model = openai_cv_model();
     $request = [
         'model' => $model,
-        'instructions' => 'You are a senior technical recruiter. Match the candidate CV to the job requirements using all evidence: skills, tools, responsibilities, seniority, industry context, education, languages, certifications, achievements, and missing signals. Score 0-100. Be evidence-based and do not invent facts. ' . $modeInstruction,
+        'instructions' => 'You are a senior technical recruiter. Match the candidate CV to the job requirements using all evidence: skills, tools, responsibilities, seniority, industry context, education, languages, certifications, achievements, and missing signals. Apply the role-specific screening template as hard criteria when present. Score 0-100. Be evidence-based and do not invent facts. ' . $modeInstruction,
         'input' => [[
             'role' => 'user',
             'content' => [[
                 'type' => 'input_text',
-                'text' => "Return JSON only.\n\nMatching mode: {$matchingMode}\n\nJob signals detected by the platform: " . implode(', ', $signals) . "\n\nJob:\n" . substr($jobText, 0, 9000) . "\n\nCandidate structured facts:\n" . json_encode($candidateFacts, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\nCandidate CV text:\n" . substr($candidateText, 0, 16000),
+                'text' => "Return JSON only.\n\nMatching mode: {$matchingMode}\n\n{$templateText}\n\nJob signals detected by the platform: " . implode(', ', $signals) . "\n\nJob:\n" . substr($jobText, 0, 9000) . "\n\nCandidate structured facts:\n" . json_encode($candidateFacts, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\nCandidate CV text:\n" . substr($candidateText, 0, 16000),
             ]],
         ]],
         'text' => [
@@ -3819,6 +4288,8 @@ function openai_cv_job_match(array $application, array $candidateScreen, array $
         'recommended_next_step' => trim((string) ($decoded['recommended_next_step'] ?? '')),
         'confidence' => trim((string) ($decoded['confidence'] ?? '')),
         'matching_mode' => $matchingMode,
+        'screening_template' => $template['name'] ?? 'General role',
+        'screening_template_version' => 1,
         'provider' => 'openai',
         'model' => $model,
     ];
@@ -3911,6 +4382,139 @@ function application_screen_data(array $application): array
     ], $screen);
 }
 
+function hard_requirement_breakdown(array $signals, array $matches, array $missing, array $jobLanguages, array $languageMatches, array $languageMissing, array $jobEducation, array $educationMatches, array $educationMissing, ?int $requiredYears, ?int $candidateYears, array $candidateScreen, array $cvQuality): array
+{
+    $items = [];
+    foreach ($candidateScreen['template_requirements'] ?? [] as $templateItem) {
+        if (!is_array($templateItem)) {
+            continue;
+        }
+        $items[] = [
+            'requirement' => (string) ($templateItem['requirement'] ?? 'Role requirement'),
+            'category' => (string) ($templateItem['category'] ?? 'Role template'),
+            'status' => (string) ($templateItem['status'] ?? 'Unknown'),
+            'evidence' => (string) ($templateItem['evidence'] ?? 'No evidence available.'),
+        ];
+    }
+    foreach (array_slice($matches, 0, 8) as $signal) {
+        $items[] = [
+            'requirement' => $signal,
+            'category' => 'Skill/tool',
+            'status' => 'Met',
+            'evidence' => 'Detected in candidate skills or CV screening.',
+        ];
+    }
+    foreach (array_slice($missing, 0, 8) as $signal) {
+        $items[] = [
+            'requirement' => $signal,
+            'category' => 'Skill/tool',
+            'status' => 'Missing',
+            'evidence' => 'Not clearly detected in candidate skills or CV text.',
+        ];
+    }
+    foreach ($jobLanguages as $language) {
+        $met = in_array($language, $languageMatches, true);
+        $items[] = [
+            'requirement' => $language,
+            'category' => 'Language',
+            'status' => $met ? 'Met' : 'Missing',
+            'evidence' => $met ? 'Language appears in CV screening.' : 'Language required by job but not detected in CV.',
+        ];
+    }
+    foreach ($jobEducation as $level) {
+        $met = in_array($level, $educationMatches, true);
+        $items[] = [
+            'requirement' => $level,
+            'category' => 'Education',
+            'status' => $met ? 'Met' : 'Missing',
+            'evidence' => $met ? 'Education level appears in CV education section.' : 'Education requirement is not clearly detected.',
+        ];
+    }
+    if ($requiredYears !== null) {
+        $status = 'Unknown';
+        $evidence = 'Candidate years of experience were not clearly detected.';
+        if ($candidateYears !== null) {
+            $status = $candidateYears >= $requiredYears ? 'Met' : 'Partial';
+            $evidence = 'Job asks ' . $requiredYears . '+ years; CV shows about ' . $candidateYears . ' year' . ($candidateYears === 1 ? '' : 's') . '.';
+        }
+        $items[] = [
+            'requirement' => $requiredYears . '+ years experience',
+            'category' => 'Experience',
+            'status' => $status,
+            'evidence' => $evidence,
+        ];
+    }
+    $contactSignals = $candidateScreen['contact_signals'] ?? [];
+    $items[] = [
+        'requirement' => 'Contact details',
+        'category' => 'CV quality',
+        'status' => $contactSignals ? 'Met' : 'Missing',
+        'evidence' => $contactSignals ? 'Found: ' . implode(', ', array_slice($contactSignals, 0, 4)) . '.' : 'No clear email/phone/contact signal found in CV text.',
+    ];
+    $qualityScore = (int) ($cvQuality['score'] ?? 0);
+    $items[] = [
+        'requirement' => 'Readable CV',
+        'category' => 'CV quality',
+        'status' => $qualityScore >= 80 ? 'Met' : ($qualityScore >= 50 ? 'Partial' : 'Missing'),
+        'evidence' => 'CV quality score: ' . $qualityScore . '% - ' . (string) ($cvQuality['label'] ?? 'Review') . '.',
+    ];
+
+    return $items;
+}
+
+function hard_requirement_breakdown_html(array $items): string
+{
+    if (!$items) {
+        return '';
+    }
+
+    $html = '<div class="requirement-breakdown"><strong>Hard Requirement Breakdown</strong>';
+    foreach ($items as $item) {
+        $status = (string) ($item['status'] ?? 'Unknown');
+        $class = strtolower(str_replace(' ', '-', $status));
+        $html .= '<div class="requirement-row">'
+            . '<span class="requirement-status ' . h($class) . '">' . h($status) . '</span>'
+            . '<span><b>' . h((string) ($item['requirement'] ?? 'Requirement')) . '</b><small>' . h((string) ($item['category'] ?? 'Check')) . '</small></span>'
+            . '<em>' . h((string) ($item['evidence'] ?? 'No evidence available.')) . '</em>'
+            . '</div>';
+    }
+
+    return $html . '</div>';
+}
+
+function recruiter_summary_text(array $application, array $match): string
+{
+    $score = (int) ($match['score'] ?? 0);
+    $jobTitle = trim((string) ($application['job_title'] ?? $application['role'] ?? 'this role'));
+    $fitLabel = !empty($match['fit_label']) ? (string) $match['fit_label'] : ($score >= 80 ? 'strong fit' : ($score >= 55 ? 'possible fit' : 'weak fit'));
+    $matched = normalize_text_list($match['matches'] ?? []);
+    $missing = normalize_text_list($match['missing'] ?? []);
+    $hardRequirements = $match['hard_requirements'] ?? [];
+    $mustMissing = array_values(array_filter($hardRequirements, static function (array $item): bool {
+        return ($item['status'] ?? '') === 'Missing' && in_array((string) ($item['category'] ?? ''), ['Role template', 'Domain', 'Technical', 'Risk', 'Leadership', 'Accounting control', 'Tool'], true);
+    }));
+    $cvQuality = is_array($match['cv_quality'] ?? null) ? $match['cv_quality'] : [];
+    $qualityScore = (int) ($cvQuality['score'] ?? 0);
+
+    $summary = 'Recruiter summary: ' . ucfirst($fitLabel) . ' for ' . $jobTitle . ' at ' . $score . '%. ';
+    if ($matched) {
+        $summary .= 'Strong evidence: ' . implode(', ', array_slice($matched, 0, 4)) . '. ';
+    }
+    if ($mustMissing) {
+        $summary .= 'Check before moving forward: ' . implode(', ', array_slice(array_map(static fn(array $item): string => (string) ($item['requirement'] ?? ''), $mustMissing), 0, 3)) . '. ';
+    } elseif ($missing) {
+        $summary .= 'Main gaps: ' . implode(', ', array_slice($missing, 0, 3)) . '. ';
+    } else {
+        $summary .= 'No major template gaps were detected. ';
+    }
+    if ($qualityScore > 0) {
+        $summary .= 'CV quality is ' . $qualityScore . '% (' . (string) ($cvQuality['label'] ?? 'review') . '). ';
+    }
+    $summary .= $score >= 75 ? 'Recommended next step: shortlist or review manually for final fit.' : ($score >= 50 ? 'Recommended next step: review manually and confirm missing requirements.' : 'Recommended next step: keep as low priority unless other evidence is available.');
+
+    return trim($summary);
+}
+
 function candidate_match_score(array $application): array
 {
     $candidateText = (string) (($application['cv_text'] ?? '') ?: ($application['candidate_cv_text'] ?? ''));
@@ -3937,6 +4541,9 @@ function candidate_match_score(array $application): array
         normalize_text_list($candidateScreen['tools'] ?? [])
     ));
     $cvQuality = cv_quality_report($candidateText, $candidateScreen, $candidateSkills, $signals);
+    $screeningTemplate = job_screening_template($application);
+    $templateRequirements = evaluate_job_template_criteria($screeningTemplate, $candidateText, $candidateSkills, $candidateScreen);
+    $candidateScreen['template_requirements'] = $templateRequirements;
     $jobLanguages = detect_languages($jobText);
     $jobEducation = detect_education_levels($jobText);
     $requiredYears = job_required_years($application);
@@ -4012,6 +4619,17 @@ function candidate_match_score(array $application): array
     if ($summary !== '') {
         $reasons[] = $summary;
     }
+    if (($screeningTemplate['criteria'] ?? [])) {
+        $templateMet = count(array_filter($templateRequirements, static fn(array $item): bool => ($item['status'] ?? '') === 'Met'));
+        $templateMustMissing = count(array_filter($templateRequirements, static fn(array $item): bool => !empty($item['must']) && ($item['status'] ?? '') !== 'Met'));
+        $score = min(100, $score + min(12, $templateMet * 2));
+        if ($templateMustMissing > 0) {
+            $score = max(0, $score - min(35, $templateMustMissing * 9));
+            $reasons[] = ($screeningTemplate['name'] ?? 'Role template') . ': ' . $templateMustMissing . ' must-have requirement' . ($templateMustMissing === 1 ? ' is' : 's are') . ' not clearly detected.';
+        } else {
+            $reasons[] = ($screeningTemplate['name'] ?? 'Role template') . ': core role-specific requirements are covered.';
+        }
+    }
     if ($matchingMode === 'strict') {
         $score = (int) round($score * 0.9);
         if ($missing) {
@@ -4036,11 +4654,27 @@ function candidate_match_score(array $application): array
     } else {
         $reasons[] = 'Balanced mode: direct evidence and related experience are weighted evenly.';
     }
+    $hardRequirements = hard_requirement_breakdown(
+        $signals,
+        $matches,
+        $missing,
+        $jobLanguages,
+        $languageMatches,
+        $languageMissing,
+        $jobEducation,
+        $educationMatches,
+        $educationMissing,
+        $requiredYears,
+        $candidateYears,
+        $candidateScreen,
+        $cvQuality
+    );
 
     $result = [
         'score' => clamp_percent($score),
         'matches' => $matches,
         'missing' => $missing,
+        'hard_requirements' => $hardRequirements,
         'language_matches' => $languageMatches,
         'language_missing' => $languageMissing,
         'education_matches' => $educationMatches,
@@ -4051,6 +4685,8 @@ function candidate_match_score(array $application): array
         'screen_education' => $screenEducationLabels,
         'screen_education_entries' => $screenEducation,
         'screen_contact_signals' => $candidateScreen['contact_signals'] ?? [],
+        'screening_template' => $screeningTemplate['name'] ?? 'General role',
+        'template_requirements' => $templateRequirements,
         'cv_quality' => $cvQuality,
         'total' => count($signals),
         'required_years' => $requiredYears,
@@ -4058,6 +4694,7 @@ function candidate_match_score(array $application): array
         'matching_mode' => $matchingMode,
         'reasons' => $reasons,
     ];
+    $result['recruiter_summary'] = recruiter_summary_text($application, $result);
 
     $aiMatch = cached_ai_job_match($application);
     if (!$aiMatch) {
@@ -4090,6 +4727,8 @@ function candidate_match_score(array $application): array
         $result['ai_provider'] = $aiMatch['provider'] ?? 'openai';
         $result['ai_model'] = $aiMatch['model'] ?? openai_cv_model();
         $result['ai_confidence'] = $aiMatch['confidence'] ?? '';
+        $result['screening_template'] = $aiMatch['screening_template'] ?? ($screeningTemplate['name'] ?? 'General role');
+        $result['recruiter_summary'] = recruiter_summary_text($application, $result);
     }
 
     return $result;
@@ -4103,11 +4742,16 @@ function candidate_match_html(array $application): string
     $fitLabel = !empty($match['fit_label']) ? (string) $match['fit_label'] : ($score >= 80 ? 'Strong Fit' : ($score >= 55 ? 'Possible Fit' : 'Weak Fit'));
     $matches = $match['matches'] ? implode(', ', array_slice($match['matches'], 0, 6)) : 'No matched requirements yet';
     $reasons = implode(' ', array_slice($match['reasons'] ?? [], 0, 3));
+    $recruiterSummary = trim((string) ($match['recruiter_summary'] ?? ''));
     $cvQuality = is_array($match['cv_quality'] ?? null) ? $match['cv_quality'] : null;
     $cvQualityHtml = $cvQuality
         ? '<span class="tiny muted cv-quality-line"><strong>CV Quality: ' . h((string) ($cvQuality['score'] ?? 0)) . '% - ' . h((string) ($cvQuality['label'] ?? 'Review')) . '</strong></span>'
         : '';
     $insightParts = [];
+    $breakdownHtml = hard_requirement_breakdown_html($match['hard_requirements'] ?? []);
+    if (!empty($match['screening_template'])) {
+        $insightParts[] = '<p><strong>Screening Template:</strong> ' . h((string) $match['screening_template']) . '</p>';
+    }
     if (!empty($match['ai_model'])) {
         $modelLine = (string) $match['ai_model'];
         if (!empty($match['ai_confidence'])) {
@@ -4146,9 +4790,10 @@ function candidate_match_html(array $application): string
         . '<strong>' . h((string) $score) . '%</strong>'
         . '<span class="tiny muted">' . h($fitLabel) . ' · ' . h(ai_matching_mode_label((string) ($match['matching_mode'] ?? ai_matching_mode()))) . ' mode</span>'
         . '<div class="score-bar"><span style="width:' . h((string) $score) . '%"></span></div>'
+        . ($recruiterSummary !== '' ? '<p class="recruiter-summary">' . h($recruiterSummary) . '</p>' : '')
         . '<span class="tiny muted">' . h($matches) . '</span>'
         . $cvQualityHtml
-        . ($reasons !== '' || $insightParts ? '<details class="match-details"><summary>Why?</summary><p>' . h($reasons) . '</p>' . implode('', $insightParts) . '</details>' : '')
+        . ($reasons !== '' || $insightParts || $breakdownHtml !== '' ? '<details class="match-details"><summary>Why?</summary><p>' . h($reasons) . '</p>' . $breakdownHtml . implode('', $insightParts) . '</details>' : '')
         . '</div>';
 }
 
@@ -4424,11 +5069,11 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
         .application-toolbar .search-inner span{display:inline-flex;align-items:center;justify-content:center;width:18px;font-size:0;line-height:1}
         .application-toolbar .search-inner span::before{content:"\1F50D";font-size:16px;line-height:1;color:#64748b}
         .application-toolbar .search-inner input{min-width:0;border:0;outline:none;box-shadow:none;background:transparent}
-        .profile-photo{display:inline-flex;align-items:center;justify-content:center;width:54px;height:54px;flex:0 0 auto;border:3px solid #e0f2fe;border-radius:999px;background:#f0f9ff;color:#0369a1;object-fit:cover;font-size:18px;font-weight:950;box-shadow:0 10px 24px rgba(14,165,233,.12)}.profile-photo-fallback{background:linear-gradient(135deg,#e0f2fe,#fff)}.profile-photo-large{width:92px;height:92px;font-size:32px;border-width:4px}.profile-header{display:flex;align-items:center;gap:18px;margin-bottom:22px;border:1px solid #e0f2fe;border-radius:22px;background:linear-gradient(135deg,#f8fbff,#fff);padding:18px}.profile-header p{margin:6px 0 0}.side-photo{width:54px;height:54px}
+        .profile-photo{display:inline-flex;align-items:center;justify-content:center;width:54px;height:54px;flex:0 0 auto;border:3px solid #e0f2fe;border-radius:999px;background:#f0f9ff;color:#0369a1;object-fit:cover;font-size:18px;font-weight:950;box-shadow:0 10px 24px rgba(14,165,233,.12)}.profile-photo-fallback{background:linear-gradient(135deg,#e0f2fe,#fff)}.profile-photo-large{width:92px;height:92px;font-size:32px;border-width:4px}.profile-header{display:flex;align-items:center;gap:18px;margin-bottom:22px;border:1px solid #e0f2fe;border-radius:22px;background:linear-gradient(135deg,#f8fbff,#fff);padding:18px}.profile-header p{margin:6px 0 0}.side-photo{width:54px;height:54px}.friendly-profile{display:grid;gap:18px}.profile-hero-card{display:grid;grid-template-columns:auto minmax(0,1fr) minmax(180px,.28fr);gap:18px;align-items:center;border:1px solid #dbeafe;border-radius:22px;background:linear-gradient(135deg,#f8fbff,#eef7ff);padding:20px}.profile-hero-copy h3{margin:4px 0 6px;font-size:28px}.profile-hero-copy p{margin:0;color:#475569;line-height:1.55}.profile-quick-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}.profile-score-card{border:1px solid #dbeafe;border-radius:18px;background:#fff;padding:16px}.profile-score-card strong{display:block;font-size:30px}.profile-score-card span{display:block;margin:4px 0 10px;color:#64748b;font-size:13px;font-weight:900}.profile-friendly-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.profile-section-card{border:1px solid #e0f2fe;border-radius:20px;background:#fff;padding:18px;box-shadow:0 8px 20px rgba(14,165,233,.05)}.profile-detail-list{display:grid;gap:10px}.profile-detail-list div{border:1px solid #e0f2fe;border-radius:14px;background:#f8fbff;padding:12px}.profile-detail-list span{display:block;margin-bottom:4px;color:#0369a1;font-size:12px;font-weight:950}.profile-detail-list strong{display:block;word-break:break-word}.check-list.compact span{padding:9px 11px}.skill-chip-list{display:flex;flex-wrap:wrap;gap:8px}.skill-chip-list span{display:inline-flex;border:1px solid #bae6fd;border-radius:999px;background:#f0f9ff;padding:8px 12px;color:#0369a1;font-size:13px;font-weight:950}.cv-card{border:1px solid #e0f2fe;border-radius:16px;background:#f8fbff;padding:14px}.cv-card+.cv-card{margin-top:10px}.cv-card p{line-height:1.55}.cv-card.soft{background:#fff}.profile-activity-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.profile-activity-grid a{border:1px solid #e0f2fe;border-radius:16px;background:#f8fbff;padding:14px;transition:.2s}.profile-activity-grid a:hover{border-color:#7dd3fc;background:#f0f9ff}.profile-activity-grid strong{display:block;font-size:24px}.profile-activity-grid span{display:block;margin-top:4px;color:#64748b;font-size:13px;font-weight:900}@media(max-width:900px){.profile-hero-card,.profile-friendly-grid{grid-template-columns:1fr}.profile-score-card{max-width:280px}.profile-activity-grid{grid-template-columns:1fr}}
         .skill-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.skill-option{display:flex;align-items:center;gap:8px;border:1px solid #e0f2fe;border-radius:14px;background:#f8fafc;padding:10px 12px;font-weight:900;color:#334155}.skill-option input{width:auto}.score-bar{height:10px;border-radius:999px;background:#e2e8f0;overflow:hidden;margin-top:10px}.score-bar span{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#0ea5e9,#22c55e)}.file-link{color:#0369a1;font-weight:950}@media(max-width:800px){.skill-grid,.skills-dropdown-menu{grid-template-columns:1fr}}
         .skills-dropdown{position:relative}.skills-dropdown summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:52px;border:1px solid #e0f2fe;border-radius:16px;background:#fff;padding:13px 16px;color:#334155;cursor:pointer;list-style:none}.skills-dropdown summary::-webkit-details-marker{display:none}.skills-dropdown summary:after{content:"";width:8px;height:8px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(45deg);transition:.2s}.skills-dropdown[open] summary{border-color:#7dd3fc;box-shadow:0 0 0 4px #e0f2fe}.skills-dropdown[open] summary:after{transform:rotate(225deg)}.skills-dropdown-menu{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:10px;border:1px solid #e0f2fe;border-radius:16px;background:#fff;padding:12px;box-shadow:0 16px 36px rgba(15,23,42,.08)}
         .cv-upload{display:grid;grid-template-columns:auto 1fr;gap:14px;align-items:center;border:1px dashed #7dd3fc;border-radius:18px;background:linear-gradient(135deg,#f0f9ff,#fff);padding:16px 18px;transition:.2s}.cv-upload:hover{border-color:#0ea5e9;background:#e0f2fe;box-shadow:0 12px 26px rgba(14,165,233,.12)}.cv-upload-icon{display:inline-flex;align-items:center;justify-content:center;width:54px;height:54px;border-radius:16px;background:#0ea5e9;color:#fff;box-shadow:0 12px 22px rgba(14,165,233,.2)}.cv-upload-icon svg{width:30px;height:30px;fill:none;stroke:currentColor;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.cv-upload-copy{display:grid;gap:7px;min-width:0}.cv-upload-copy strong{font-size:16px;color:#0f172a}.cv-upload-copy span{color:#64748b;font-size:13px;font-weight:800}.cv-upload-input{width:100%;max-width:360px;border:1px solid #bae6fd;border-radius:12px;background:#fff;padding:10px;color:#334155;cursor:pointer}.cv-upload-file{display:inline-flex;width:max-content;max-width:100%;border-radius:999px;background:#e0f2fe;padding:5px 10px;color:#0369a1!important;font-size:12px!important;font-weight:950!important}
-        .match-score{display:grid;gap:6px;min-width:150px}.match-score strong{font-size:20px}.match-score.high strong{color:#15803d}.match-score.medium strong{color:#b45309}.match-score.low strong{color:#b91c1c}.match-score .score-bar{margin-top:0}.match-score .cv-quality-line{display:block;font-size:10px;line-height:1.2;font-weight:950;white-space:nowrap}.match-score .cv-quality-line strong{font-size:10px;font-weight:950}.match-score.high .score-bar span{background:linear-gradient(90deg,#22c55e,#16a34a)}.match-score.medium .score-bar span{background:linear-gradient(90deg,#f59e0b,#d97706)}.match-score.low .score-bar span{background:linear-gradient(90deg,#ef4444,#dc2626)}.match-details{margin-top:2px}.match-details summary{width:max-content;cursor:pointer;color:#0369a1;font-size:12px;font-weight:950}.match-details p{max-width:360px;margin:6px 0 0;color:#475569;font-size:12px;line-height:1.55}
+        .match-score{display:grid;gap:6px;min-width:150px}.match-score strong{font-size:20px}.match-score.high strong{color:#15803d}.match-score.medium strong{color:#b45309}.match-score.low strong{color:#b91c1c}.match-score .score-bar{margin-top:0}.match-score .cv-quality-line{display:block;font-size:10px;line-height:1.2;font-weight:950;white-space:nowrap}.match-score .cv-quality-line strong{font-size:10px;font-weight:950}.match-score.high .score-bar span{background:linear-gradient(90deg,#22c55e,#16a34a)}.match-score.medium .score-bar span{background:linear-gradient(90deg,#f59e0b,#d97706)}.match-score.low .score-bar span{background:linear-gradient(90deg,#ef4444,#dc2626)}.recruiter-summary{margin:0;color:#334155;font-size:11px;line-height:1.45;font-weight:800}.match-details{margin-top:2px}.match-details summary{width:max-content;cursor:pointer;color:#0369a1;font-size:12px;font-weight:950}.match-details p{max-width:360px;margin:6px 0 0;color:#475569;font-size:12px;line-height:1.55}
         .table-wrap{overflow:auto;border:1px solid #e0f2fe;border-radius:18px;background:#fff}.data-table{width:100%;border-collapse:separate;border-spacing:0;background:#fff;font-size:12px;line-height:1.35}.data-table th,.data-table td{padding:10px 12px;border-bottom:1px solid #eaf6ff;text-align:left;vertical-align:top}.data-table th{position:sticky;top:0;z-index:1;background:#f0f9ff;color:#334155;font-size:11px;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}.data-table tbody tr:hover td{background:#f8fbff}.data-table td .tiny{font-size:10px}.data-table tr:last-child td{border-bottom:0}.data-table a{color:#0f172a;text-decoration:none}.data-table a:hover{color:#0369a1}.table-primary{font-size:12px;font-weight:900;color:#0f172a;line-height:1.35}.table-secondary{margin-top:4px;color:#64748b;font-size:10px;font-weight:700;line-height:1.4}.table-tertiary{margin-top:3px;color:#94a3b8;font-size:10px;font-weight:700;line-height:1.35}.applicant-cell,.job-cell{min-width:190px}.match-cell{min-width:190px}.cv-cell{min-width:90px;white-space:nowrap}.status-cell{min-width:100px}.actions-cell{min-width:170px}.table-open-btn{display:inline-flex;margin-bottom:8px}.table-actions{display:flex;flex-direction:column;align-items:flex-start;gap:6px}.table-actions .select{min-width:130px;padding:8px 10px;border-radius:10px;font-size:12px}.table-actions .btn{padding:8px 10px;font-size:12px}.compact-progress{min-width:150px}
         .friendly-app-table .candidate-stack{display:grid;grid-template-columns:42px 1fr;gap:12px;align-items:start}.friendly-app-table .candidate-avatar{display:flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:14px;background:linear-gradient(135deg,#0ea5e9,#3b82f6);color:#fff;font-size:14px;font-weight:950;box-shadow:0 12px 24px rgba(14,165,233,.18)}.friendly-app-table .table-fit-wrap .match-score{min-width:135px}.friendly-app-table .table-fit-wrap .match-details p{max-width:240px}.friendly-app-table .table-status-wrap{display:grid;gap:8px}.friendly-app-table .table-score-note{color:#64748b;font-size:11px;font-weight:700;line-height:1.4}.friendly-app-table .table-inline-actions{display:grid;gap:10px}.friendly-app-table .table-mini-form{display:grid;gap:8px}.friendly-app-table .table-mini-form .select{min-width:150px;padding:9px 10px;border-radius:12px;font-size:12px}.friendly-app-table .table-mini-form .btn{padding:9px 12px;font-size:12px}.friendly-app-table tbody tr:hover td{background:linear-gradient(180deg,#f8fbff,#ffffff)}
         .manage-overview{display:grid;gap:18px;margin-bottom:24px}.manage-copy{display:grid;gap:8px;padding:22px}.manage-copy p{margin:0;color:#64748b;line-height:1.7}.manage-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.manage-summary .profile-box{background:linear-gradient(135deg,#f8fbff,#fff)}.manage-summary strong{display:block;font-size:24px;line-height:1;color:#0f172a}.manage-summary span{display:block;margin-top:8px;color:#64748b;font-size:13px;font-weight:800}.manage-edit-stack{display:grid;gap:14px;margin-top:18px}.manage-edit-stack .app-panel summary{background:#f8fbff}
@@ -4448,7 +5093,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
         .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
         .hero-pipeline-row{margin-top:34px}.recruit-animation{position:relative;overflow:hidden;border:1px solid #dbeafe;border-radius:22px;background:linear-gradient(135deg,#fff,#eff6ff);padding:24px}.recruit-animation-head{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:22px}.recruit-animation-head strong{font-size:18px}.recruit-animation-head span{border-radius:999px;background:#dcfce7;color:#166534;padding:6px 10px;font-size:12px;font-weight:950}.pipeline-track{position:relative;height:150px}.pipeline-line{position:absolute;left:34px;right:34px;top:58px;height:4px;border-radius:999px;background:#bae6fd}.pipeline-stage{position:absolute;top:20px;display:grid;gap:8px;justify-items:center;z-index:2}.pipeline-stage:nth-child(2){left:0}.pipeline-stage:nth-child(3){left:25%;transform:translateX(-50%)}.pipeline-stage:nth-child(4){left:50%;transform:translateX(-50%)}.pipeline-stage:nth-child(5){left:75%;transform:translateX(-50%)}.pipeline-stage:nth-child(6){right:0}.pipeline-node{display:flex;align-items:center;justify-content:center;width:72px;height:72px;border:3px solid #e0f2fe;border-radius:22px;background:#fff;color:#0369a1;font-size:28px;box-shadow:0 14px 30px rgba(14,165,233,.13)}.pipeline-stage small{color:#475569;font-weight:900}.candidate-dot{position:absolute;top:48px;left:32px;z-index:3;width:24px;height:24px;border:4px solid #fff;border-radius:999px;background:#0ea5e9;box-shadow:0 10px 22px rgba(14,165,233,.35);animation:candidateMove 5s ease-in-out infinite}.candidate-dot.two{animation-delay:1.55s;background:#22c55e}.candidate-dot.three{animation-delay:3.1s;background:#f59e0b}.offer-card{position:absolute;right:22px;bottom:0;display:flex;align-items:center;gap:10px;border:1px solid #bbf7d0;border-radius:16px;background:#f0fdf4;padding:10px 12px;color:#166534;font-size:13px;font-weight:950;animation:offerPulse 2.5s ease-in-out infinite}.offer-card i{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:999px;background:#22c55e;color:#fff;font-style:normal}@keyframes candidateMove{0%{left:32px;transform:scale(.8);opacity:0}12%{opacity:1}26%{left:25%;transform:scale(1)}46%{left:50%;transform:scale(1)}66%{left:75%;transform:scale(1)}86%{left:calc(100% - 56px);transform:scale(.92);opacity:1}100%{left:calc(100% - 56px);transform:scale(.7);opacity:0}}@keyframes offerPulse{0%,100%{transform:translateY(0);box-shadow:none}50%{transform:translateY(-4px);box-shadow:0 12px 22px rgba(34,197,94,.18)}}
         .career-potential{padding-top:34px}.idea-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px}.idea-card{min-height:420px;border-radius:32px;padding:34px;display:flex;flex-direction:column;justify-content:space-between;overflow:hidden}.idea-card h3{font-size:24px}.idea-card p{margin:14px 0 0;color:#1f2937;line-height:1.7}.idea-card.yellow{background:#fef0a8}.idea-card.pink{background:#f8ced2}.idea-card.violet{background:#a9a1ff}.idea-art{height:220px;display:flex;align-items:center;justify-content:center}.idea-art svg{width:190px;height:190px;stroke:#020617;stroke-width:8;fill:none;stroke-linecap:round;stroke-linejoin:round}.idea-art .fill{fill:#020617;stroke:none}.journey-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px}.journey-card{min-height:184px;border-radius:8px;background:#f3f4f6;padding:28px}.journey-icon{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:999px;background:#0ea5e9;color:#fff;font-weight:950;margin-bottom:26px}.journey-card h3{font-size:16px}.journey-card p{font-size:13px;line-height:1.7;color:#374151}.innovation-band{border-top:1px solid #e0f2fe;border-bottom:1px solid #e0f2fe;background:#f8fafc}.innovation-grid{display:grid;grid-template-columns:1.1fr repeat(3,1fr);gap:18px;align-items:stretch}.innovation-lead{padding:8px 0}.innovation-lead h2{font-size:34px}.innovation-card{border:1px solid #e0f2fe;border-radius:18px;background:#fff;padding:22px}.innovation-card .tiny{display:inline-flex;margin-bottom:14px;border-radius:999px;background:#e0f2fe;padding:5px 10px;color:#0369a1;font-weight:950}.footer-brand{font-size:clamp(56px,9vw,118px);line-height:.9;font-weight:950;letter-spacing:-.07em;color:#0ea5e9}.footer-top{display:grid;grid-template-columns:1.2fr repeat(3,1fr);gap:38px;align-items:start}.footer-links{display:grid;gap:10px;color:#64748b;font-size:14px}.footer-bottom{margin-top:44px;border:1px solid #cbd5e1;border-radius:12px;padding:14px 18px;display:flex;justify-content:space-between;align-items:center;gap:18px}.social-row{display:flex;align-items:center;gap:10px}.social-dot{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:999px;background:#082f49;color:#fff;font-size:12px;font-weight:950}.language-pill{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;background:#082f49;color:#fff;padding:7px 12px;font-size:12px;font-weight:950}
-        .career-potential{padding-top:18px}.idea-grid{grid-template-columns:1.15fr .85fr .85fr;align-items:stretch}.idea-card{min-height:360px;border:1px solid #dbeafe;border-radius:22px;background:#fff!important;box-shadow:0 18px 42px rgba(14,165,233,.08)}.idea-card:first-child{background:linear-gradient(135deg,#e0f2fe,#fff)!important}.idea-card:nth-child(2){background:linear-gradient(135deg,#f0fdf4,#fff)!important}.idea-card:nth-child(3){background:linear-gradient(135deg,#fff7ed,#fff)!important}.idea-art{height:150px;justify-content:flex-start}.idea-art svg{width:126px;height:126px;stroke:#0284c7;stroke-width:7}.journey-grid{grid-template-columns:repeat(4,minmax(0,1fr));counter-reset:journey}.journey-card{position:relative;border:1px solid #e0f2fe;border-radius:18px;background:#fff;padding:26px;box-shadow:0 1px 3px rgba(15,23,42,.05)}.journey-icon{width:34px;height:34px;margin-bottom:18px;background:#0f172a}.journey-card:after{content:"";position:absolute;left:26px;right:26px;bottom:0;height:4px;border-radius:999px 999px 0 0;background:#0ea5e9}.about-story{display:grid;grid-template-columns:1.1fr .9fr;gap:30px;align-items:start}.about-panel{border:1px solid #dbeafe;border-radius:28px;background:linear-gradient(135deg,#ffffff,#f4faff);padding:32px;box-shadow:0 20px 44px rgba(14,165,233,.10)}.about-panel p{color:#475569;line-height:1.85}.about-chip-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:20px}.about-chip{display:inline-flex;align-items:center;border:1px solid #dbeafe;border-radius:999px;background:#fff;padding:8px 14px;color:#0369a1;font-size:13px;font-weight:900}.about-metric-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.about-metric{border:1px solid #dbeafe;border-radius:22px;background:#fff;padding:20px;box-shadow:0 10px 24px rgba(15,23,42,.05)}.about-metric strong{display:block;font-size:28px;line-height:1;color:#0f172a}.about-metric span{display:block;margin-top:8px;color:#64748b;font-weight:800}.about-values{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-top:24px}.about-value{border:1px solid #e0f2fe;border-radius:20px;background:#fff;padding:22px;box-shadow:0 1px 3px rgba(15,23,42,.05)}.about-value h3{margin-bottom:10px}.about-value p{margin:0;color:#475569;line-height:1.75}.tracking-story{overflow:hidden;border:1px solid #dbeafe;border-radius:28px;background:linear-gradient(135deg,#f8fdff,#eef7ff 55%,#fff);padding:32px;box-shadow:0 24px 54px rgba(14,165,233,.10)}.tracking-story-grid{display:grid;grid-template-columns:1.1fr .9fr;gap:28px;align-items:center}.tracking-story-copy p{color:#475569;line-height:1.8}.tracking-badges{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0 0}.tracking-badge{display:inline-flex;align-items:center;gap:8px;border:1px solid #dbeafe;border-radius:999px;background:#fff;padding:9px 14px;color:#0369a1;font-size:13px;font-weight:900}.tracking-visual{position:relative;min-height:360px;border-radius:24px;background:linear-gradient(180deg,#ffffff,#eff6ff);padding:24px;border:1px solid #dbeafe;overflow:hidden}.tracking-glow{position:absolute;right:-20px;top:-20px;width:180px;height:180px;border-radius:999px;background:rgba(14,165,233,.14);filter:blur(18px)}.tracking-line{position:absolute;left:42px;top:50px;bottom:44px;width:4px;border-radius:999px;background:linear-gradient(180deg,#7dd3fc,#bfdbfe)}.tracking-step{position:relative;z-index:1;display:grid;grid-template-columns:64px 1fr;gap:14px;align-items:center;margin-bottom:18px}.tracking-node{display:flex;align-items:center;justify-content:center;width:64px;height:64px;border-radius:20px;background:#fff;border:1px solid #dbeafe;box-shadow:0 14px 28px rgba(14,165,233,.10);font-size:24px}.tracking-card{border:1px solid #dbeafe;border-radius:18px;background:rgba(255,255,255,.95);padding:14px 16px;box-shadow:0 10px 24px rgba(15,23,42,.05)}.tracking-card strong{display:block;font-size:15px}.tracking-card span{display:block;margin-top:4px;color:#64748b;font-size:13px;line-height:1.55}.tracking-card.support{background:linear-gradient(135deg,#f0fdf4,#ffffff)}.tracking-card.care{background:linear-gradient(135deg,#fff7ed,#ffffff)}.tracking-pulse{position:absolute;left:34px;top:44px;width:18px;height:18px;border-radius:999px;background:#0ea5e9;box-shadow:0 0 0 0 rgba(14,165,233,.45);animation:trackingPulse 2.6s ease-in-out infinite}.tracking-ribbon{display:inline-flex;align-items:center;gap:8px;margin-bottom:18px;border-radius:999px;background:#0f172a;color:#fff;padding:8px 14px;font-size:12px;font-weight:900;letter-spacing:.08em;text-transform:uppercase}.innovation-band{background:linear-gradient(135deg,#f8fafc,#eff6ff)}.innovation-card{border-radius:8px}.footer{padding:48px 0 28px}.footer-brand{font-size:clamp(38px,7vw,82px);letter-spacing:-.05em}.footer-top{grid-template-columns:1.4fr repeat(3,minmax(150px,1fr));border-top:1px solid #e0f2fe;padding-top:28px}.footer-bottom{border-radius:18px;background:#f8fafc}.social-dot,.language-pill{background:#0ea5e9}@keyframes trackingPulse{0%,100%{transform:scale(.92);box-shadow:0 0 0 0 rgba(14,165,233,.42)}50%{transform:scale(1.06);box-shadow:0 0 0 14px rgba(14,165,233,0)}}
+        .career-potential{padding-top:18px}.idea-grid{grid-template-columns:1.15fr .85fr .85fr;align-items:stretch}.idea-card{min-height:360px;border:1px solid #dbeafe;border-radius:22px;background:#fff!important;box-shadow:0 18px 42px rgba(14,165,233,.08)}.idea-card:first-child{background:linear-gradient(135deg,#e0f2fe,#fff)!important}.idea-card:nth-child(2){background:linear-gradient(135deg,#f0fdf4,#fff)!important}.idea-card:nth-child(3){background:linear-gradient(135deg,#fff7ed,#fff)!important}.idea-art{height:150px;justify-content:flex-start}.idea-art svg{width:126px;height:126px;stroke:#0284c7;stroke-width:7}.journey-grid{grid-template-columns:repeat(4,minmax(0,1fr));counter-reset:journey}.journey-card{position:relative;border:1px solid #e0f2fe;border-radius:18px;background:#fff;padding:26px;box-shadow:0 1px 3px rgba(15,23,42,.05)}.journey-icon{width:34px;height:34px;margin-bottom:18px;background:#0f172a}.journey-card:after{content:"";position:absolute;left:26px;right:26px;bottom:0;height:4px;border-radius:999px 999px 0 0;background:#0ea5e9}.about-story{display:grid;grid-template-columns:1.1fr .9fr;gap:30px;align-items:start}.about-panel{border:1px solid #dbeafe;border-radius:28px;background:linear-gradient(135deg,#ffffff,#f4faff);padding:32px;box-shadow:0 20px 44px rgba(14,165,233,.10)}.about-panel p{color:#475569;line-height:1.85}.about-chip-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:20px}.about-chip{display:inline-flex;align-items:center;border:1px solid #dbeafe;border-radius:999px;background:#fff;padding:8px 14px;color:#0369a1;font-size:13px;font-weight:900}.about-metric-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.about-metric{border:1px solid #dbeafe;border-radius:22px;background:#fff;padding:20px;box-shadow:0 10px 24px rgba(15,23,42,.05)}.about-metric strong{display:block;font-size:28px;line-height:1;color:#0f172a}.about-metric span{display:block;margin-top:8px;color:#64748b;font-weight:800}.about-values{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-top:24px}.about-value{border:1px solid #e0f2fe;border-radius:20px;background:#fff;padding:22px;box-shadow:0 1px 3px rgba(15,23,42,.05)}.about-value h3{margin-bottom:10px}.about-value p{margin:0;color:#475569;line-height:1.75}.tracking-story{overflow:hidden;border:1px solid #dbeafe;border-radius:28px;background:linear-gradient(135deg,#f8fdff,#eef7ff 55%,#fff);padding:32px;box-shadow:0 24px 54px rgba(14,165,233,.10)}.tracking-story-grid{display:grid;grid-template-columns:1.1fr .9fr;gap:28px;align-items:center}.tracking-story-copy p{color:#475569;line-height:1.8}.tracking-badges{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0 0}.tracking-badge{display:inline-flex;align-items:center;gap:8px;border:1px solid #dbeafe;border-radius:999px;background:#fff;padding:9px 14px;color:#0369a1;font-size:13px;font-weight:900}.tracking-visual{position:relative;min-height:360px;border-radius:24px;background:linear-gradient(180deg,#ffffff,#eff6ff);padding:24px;border:1px solid #dbeafe;overflow:hidden}.tracking-glow{position:absolute;right:-20px;top:-20px;width:180px;height:180px;border-radius:999px;background:rgba(14,165,233,.14);filter:blur(18px)}.tracking-line{position:absolute;left:42px;top:50px;bottom:44px;width:4px;border-radius:999px;background:linear-gradient(180deg,#7dd3fc,#bfdbfe)}.tracking-step{position:relative;z-index:1;display:grid;grid-template-columns:64px 1fr;gap:14px;align-items:center;margin-bottom:18px}.tracking-node{display:flex;align-items:center;justify-content:center;width:64px;height:64px;border-radius:20px;background:#fff;border:1px solid #dbeafe;box-shadow:0 14px 28px rgba(14,165,233,.10);font-size:24px}.tracking-card{border:1px solid #dbeafe;border-radius:18px;background:rgba(255,255,255,.95);padding:14px 16px;box-shadow:0 10px 24px rgba(15,23,42,.05)}.tracking-card strong{display:block;font-size:15px}.tracking-card span{display:block;margin-top:4px;color:#64748b;font-size:13px;line-height:1.55}.tracking-card.support{background:linear-gradient(135deg,#f0fdf4,#ffffff)}.tracking-card.care{background:linear-gradient(135deg,#fff7ed,#ffffff)}.tracking-pulse{position:absolute;left:34px;top:44px;width:18px;height:18px;border-radius:999px;background:#0ea5e9;box-shadow:0 0 0 0 rgba(14,165,233,.45);animation:trackingPulse 2.6s ease-in-out infinite}.tracking-ribbon{display:inline-flex;align-items:center;gap:8px;margin-bottom:18px;border-radius:999px;background:#0f172a;color:#fff;padding:8px 14px;font-size:12px;font-weight:900;letter-spacing:.08em;text-transform:uppercase}.innovation-band{background:linear-gradient(135deg,#f8fafc,#eff6ff)}.innovation-card{border-radius:8px}.footer{margin-top:56px;border-top:1px solid #dbeafe;background:#fff;padding:0 0 24px;overflow:hidden}.footer-kdx-motion{position:relative;margin:0 calc(50% - 50vw) 24px;padding:22px 24px 16px;border-bottom:1px solid #dbeafe;background:linear-gradient(90deg,#f8fbff,#eef7ff,#fff);text-align:center}.footer-kdx-word{display:inline-block;font-size:clamp(48px,11vw,150px);line-height:.85;font-weight:950;letter-spacing:.02em;text-transform:uppercase;color:transparent;-webkit-text-stroke:1px rgba(14,165,233,.5);background:linear-gradient(110deg,#0f172a 0%,#0ea5e9 40%,#22c55e 58%,#0369a1 100%);background-size:220% 100%;-webkit-background-clip:text;background-clip:text;filter:drop-shadow(0 18px 30px rgba(14,165,233,.16));animation:footerKdxShine 4.2s ease-in-out infinite}.footer-kdx-letter{display:inline-block;animation:footerKdxLetter 2.8s ease-in-out infinite}.footer-kdx-letter:nth-child(2){animation-delay:.12s}.footer-kdx-letter:nth-child(3){animation-delay:.24s}.footer-kdx-letter:nth-child(4){animation-delay:.36s}.footer-kdx-letter:nth-child(5){animation-delay:.48s}.footer-kdx-letter:nth-child(6){animation-delay:.6s}.footer-kdx-letter:nth-child(7){animation-delay:.72s}.footer-panel{border:1px solid #dbeafe;border-radius:26px;background:linear-gradient(135deg,#f8fbff,#eef7ff);padding:28px;margin-bottom:26px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:22px;align-items:center;box-shadow:0 20px 46px rgba(14,165,233,.10)}.footer-panel .eyebrow{margin:0 0 8px}.footer-panel h3{font-size:26px;margin:0}.footer-panel p{max-width:620px;margin:10px 0 0;color:#475569;line-height:1.7}.footer-cta{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end}.footer-top{display:grid;grid-template-columns:repeat(3,minmax(150px,1fr));gap:30px;align-items:start;border-top:0;padding-top:0}.footer-links{display:grid;gap:10px;color:#64748b;font-size:14px}.footer-links strong{margin-bottom:4px;color:#0f172a;font-size:13px;letter-spacing:.08em;text-transform:uppercase}.footer-links a{width:max-content;max-width:100%;transition:.2s}.footer-links a:hover{color:#0284c7;transform:translateX(3px)}.footer-bottom{margin-top:26px;border-top:1px solid #dbeafe;padding-top:18px;display:flex;justify-content:space-between;align-items:center;gap:18px}.social-row{display:flex;align-items:center;gap:10px}.social-dot,.language-pill{display:inline-flex;align-items:center;justify-content:center;height:30px;border:1px solid #dbeafe;border-radius:999px;background:#f0f9ff;color:#0369a1;font-size:12px;font-weight:950}.social-dot{width:30px}.language-pill{padding:0 12px}@keyframes trackingPulse{0%,100%{transform:scale(.92);box-shadow:0 0 0 0 rgba(14,165,233,.42)}50%{transform:scale(1.06);box-shadow:0 0 0 14px rgba(14,165,233,0)}}@keyframes footerKdxLetter{0%,100%{transform:translateY(0) rotate(0deg)}35%{transform:translateY(-7px) rotate(-1.5deg)}70%{transform:translateY(2px) rotate(1deg)}}@keyframes footerKdxShine{0%,100%{background-position:0 50%}50%{background-position:100% 50%}}@media(prefers-reduced-motion:reduce){.footer-kdx-word,.footer-kdx-letter{animation:none}}
         body.theme-dark{background:linear-gradient(#08111f,#0f172a 42%,#111827);color:#e5e7eb}
         body.theme-dark .header{border-color:#1e3a5f;background:rgba(15,23,42,.88)}
         body.theme-dark .brand-sub,body.theme-dark .nav-link.active,body.theme-dark .nav-link:hover,body.theme-dark .file-link{color:#7dd3fc}
@@ -4472,6 +5117,26 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
         body.theme-dark .idea-card.yellow{background:#3d3414}body.theme-dark .idea-card.pink{background:#3f2228}body.theme-dark .idea-card.violet{background:#312e63}
         body.theme-dark .idea-art svg{stroke:#f8fafc}body.theme-dark .idea-art .fill{fill:#f8fafc}
         body.theme-dark .footer-bottom{border-color:#1e3a5f}
+        body.theme-dark .application-card,body.theme-dark .application-toolbar,body.theme-dark .application-toolbar .search-inner,body.theme-dark .app-panel,body.theme-dark .app-panel summary,body.theme-dark .notification-item,body.theme-dark .profile-header,body.theme-dark .profile-hero-card,body.theme-dark .profile-score-card,body.theme-dark .profile-section-card,body.theme-dark .profile-detail-list div,body.theme-dark .cv-card,body.theme-dark .profile-activity-grid a,body.theme-dark .profile-photo,body.theme-dark .profile-photo-fallback,body.theme-dark .about-panel,body.theme-dark .about-metric,body.theme-dark .about-value,body.theme-dark .tracking-story,body.theme-dark .tracking-visual,body.theme-dark .tracking-node,body.theme-dark .tracking-card,body.theme-dark .tracking-card.support,body.theme-dark .tracking-card.care,body.theme-dark .tracking-badge,body.theme-dark .manage-copy,body.theme-dark .manage-summary .profile-box,body.theme-dark .manage-edit-stack .app-panel summary,body.theme-dark .job-detail-main,body.theme-dark .notification-card,body.theme-dark .empty-state,body.theme-dark .idea-card,body.theme-dark .idea-card:first-child,body.theme-dark .idea-card:nth-child(2),body.theme-dark .idea-card:nth-child(3){border-color:#1e3a5f!important;background:#111827!important;color:#e5e7eb!important;box-shadow:none}
+        body.theme-dark .side-user,body.theme-dark .profile-box,body.theme-dark .info,body.theme-dark .applicant,body.theme-dark .application-toolbar,body.theme-dark .filter-block,body.theme-dark .filter-panel,body.theme-dark .table-wrap,body.theme-dark .footer-bottom,body.theme-dark [style*="background:#f8fafc"]{border-color:#1e3a5f!important;background:#0f172a!important;color:#e5e7eb!important}
+        body.theme-dark .badge,body.theme-dark .about-chip,body.theme-dark .tracking-badge,body.theme-dark .filter-count,body.theme-dark .cv-upload-file,body.theme-dark .app-panel summary:after{background:#0c4a6e!important;color:#bae6fd!important;border-color:#1e3a5f!important}
+        body.theme-dark .table-primary,body.theme-dark .table-primary a,body.theme-dark .manage-summary strong,body.theme-dark .about-metric strong,body.theme-dark .filter-head h3,body.theme-dark .job-rich-text blockquote,body.theme-dark .rich-editor,body.theme-dark .company-line,body.theme-dark [style*="color:#475569"],body.theme-dark [style*="color:#334155"],body.theme-dark [style*="color:#0f172a"]{color:#e5e7eb!important}
+        body.theme-dark .table-secondary,body.theme-dark .table-tertiary,body.theme-dark .friendly-app-table .table-score-note,body.theme-dark .toolbar-meta,body.theme-dark .pagination-meta,body.theme-dark .check-item,body.theme-dark .profile-hero-copy p,body.theme-dark .profile-score-card span,body.theme-dark .profile-activity-grid span,body.theme-dark .about-panel p,body.theme-dark .about-value p,body.theme-dark .tracking-story-copy p,body.theme-dark .tracking-card span,body.theme-dark .match-details p,body.theme-dark .recruiter-summary,body.theme-dark .manage-copy p,body.theme-dark .manage-summary span{color:#cbd5e1!important}
+        body.theme-dark [style*="color:#0369a1"],body.theme-dark [style*="color:#0284c7"],body.theme-dark .match-details summary,body.theme-dark .data-table a:hover{color:#7dd3fc!important}
+        body.theme-dark .input::placeholder,body.theme-dark .textarea::placeholder,body.theme-dark .search input::placeholder,body.theme-dark .rich-editor:empty:before{color:#94a3b8!important}
+        body.theme-dark .data-table tbody tr:hover td,body.theme-dark .friendly-app-table tbody tr:hover td{background:#10233d!important}
+        body.theme-dark .status-pill.new,body.theme-dark .status-pill.applied{background:#0c4a6e;color:#bae6fd}body.theme-dark .status-pill.reviewed{background:#312e81;color:#c7d2fe}body.theme-dark .status-pill.shortlisted{background:#451a03;color:#fde68a}body.theme-dark .status-pill.accepted{background:#052e16;color:#bbf7d0}body.theme-dark .status-pill.rejected{background:#450a0a;color:#fecaca}
+        body.theme-dark .footer{border-color:#1e3a5f;background:#0b1220}body.theme-dark .footer-kdx-motion{border-color:#1e3a5f;background:linear-gradient(90deg,#0b1220,#10233d,#111827)}body.theme-dark .footer-kdx-word{-webkit-text-stroke-color:rgba(125,211,252,.5);filter:drop-shadow(0 18px 30px rgba(56,189,248,.12))}body.theme-dark .footer-panel{border-color:#1e3a5f;background:#111827;box-shadow:none}body.theme-dark .footer-links strong{color:#e5e7eb}body.theme-dark .footer-bottom,body.theme-dark .social-dot,body.theme-dark .language-pill{border-color:#1e3a5f;background:#111827;color:#bae6fd}
+        .blog-cover{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;border:1px solid #e0f2fe;border-radius:18px;background:#f8fafc}.blog-cover.detail{margin:0 0 24px}.blog-card-image{margin:-8px -8px 18px}.job-rich-text img{display:block;max-width:100%;height:auto;margin:18px 0;border-radius:18px}.blog-admin-form{max-width:760px}.blog-recent-list{margin-top:28px}.image-preview{display:none;max-width:260px;margin-top:12px}.image-preview.has-image{display:block}.blog-manage-list{max-width:980px;margin-top:28px}.blog-post-row{display:grid;grid-template-columns:72px minmax(0,1fr) auto;gap:14px;align-items:center}.blog-post-thumb{width:72px;height:52px;border:1px solid #e0f2fe;border-radius:12px;object-fit:cover;background:#f8fafc}.blog-post-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}body.theme-dark .blog-cover,body.theme-dark .blog-post-thumb{border-color:#1e3a5f;background:#0f172a}
+        .job-action-panel{position:sticky;top:104px;display:grid;gap:14px;align-self:start}.job-action-panel .job-top{margin-bottom:0}.job-side-facts{display:grid;gap:8px}.job-side-facts div,.job-match-card,.job-applied-note{border:1px solid #e0f2fe;border-radius:14px;background:#f8fbff;padding:12px}.job-side-facts span,.company-snapshot-grid span{display:block;margin-bottom:4px;color:#0369a1;font-size:12px;font-weight:950}.job-side-facts strong{display:block}.job-applied-note{display:grid;gap:4px}.job-applied-note span{color:#64748b;font-size:13px;font-weight:900}.job-match-card{display:grid;gap:10px}.job-match-card .overview-panel-head{margin-bottom:0}.job-match-card h3{font-size:16px}.job-match-list{display:grid;gap:8px}.job-match-list span{border:1px solid #e2e8f0;border-radius:12px;background:#fff;padding:9px 10px;color:#64748b;font-size:12px;font-weight:950}.job-match-list span.ok{border-color:#bbf7d0;background:#f0fdf4;color:#15803d}.job-section-card{border:1px solid #e0f2fe;border-radius:20px;background:#fff;padding:20px;margin-top:18px}.job-section-card:first-of-type{margin-top:0}.job-detail-main>.job-section-card:first-of-type{margin-top:0}.job-detail-hero,.job-detail-title{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:24px}.match-skill-grid,.company-snapshot-grid,.similar-job-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.company-snapshot-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.company-snapshot-grid div{border:1px solid #e0f2fe;border-radius:14px;background:#f8fbff;padding:14px}.tag.good{background:#dcfce7;color:#166534}.apply-card{margin-top:18px;background:#f8fafc}.similar-job-card{display:grid;gap:6px;border:1px solid #e0f2fe;border-radius:16px;background:#f8fbff;padding:14px;transition:.2s}.similar-job-card:hover{border-color:#7dd3fc;background:#f0f9ff}.similar-job-card span,.similar-job-card em{color:#64748b;font-size:13px;font-style:normal;font-weight:800}body.theme-dark .job-side-facts div,body.theme-dark .job-match-card,body.theme-dark .job-applied-note,body.theme-dark .job-section-card,body.theme-dark .company-snapshot-grid div,body.theme-dark .similar-job-card,body.theme-dark .apply-card,body.theme-dark .job-match-list span{border-color:#1e3a5f;background:#111827;color:#e5e7eb}@media(max-width:1024px){.job-action-panel{position:static}.match-skill-grid,.company-snapshot-grid,.similar-job-grid{grid-template-columns:1fr}.job-detail-hero,.job-detail-title{flex-direction:column}}
+        .dashboard-section{padding:34px 0 48px}.dashboard-section>.wrap{max-width:1440px}.dashboard-section .dash-hero{margin-bottom:20px;border-radius:24px;padding:24px 28px}.dashboard-section .dash-hero h2{font-size:32px}.dashboard-section .dash-hero p{margin:8px 0 0}.dashboard-section .dash-layout{grid-template-columns:245px minmax(0,1fr)!important;gap:20px}.dashboard-main{gap:18px}.dashboard-content-card{padding:22px}.dashboard-section .grid3{gap:16px}.dashboard-section .stat{padding:16px;border-radius:18px}.dashboard-section .stat-value{font-size:24px}.settings-grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(280px,.85fr);gap:18px;align-items:start}.settings-card{border:1px solid #e0f2fe;border-radius:18px;background:#f8fbff;padding:18px;gap:14px}.settings-grid>.settings-card:first-child{grid-row:span 2}.settings-card h3{font-size:18px}.settings-card .btn{width:max-content;min-width:150px}.settings-card .profile-box{padding:14px}.settings-card .tiny{line-height:1.5}body.theme-dark .settings-card{border-color:#1e3a5f;background:#111827;color:#e5e7eb}@media(max-width:1024px){.dashboard-section .dash-layout{grid-template-columns:1fr!important}.settings-grid{grid-template-columns:1fr}.settings-grid>.settings-card:first-child{grid-row:auto}}
+        .dashboard-section .wrap,.dashboard-section .dash-layout,.dashboard-section .dashboard-main,.dashboard-section .dashboard-content-card,.dashboard-section .notification-card,.dashboard-section .grid3,.dashboard-section .stat{min-width:0}.dashboard-section .dashboard-main{overflow:hidden}.dashboard-section .dashboard-content-card,.dashboard-section .notification-card{overflow:hidden}.dashboard-section .application-toolbar{grid-template-columns:minmax(220px,1fr) minmax(160px,220px) auto auto auto;overflow-x:auto}.dashboard-section .application-toolbar .btn{white-space:nowrap}.dashboard-section .notification-list{display:flex;gap:10px;overflow-x:auto;padding-bottom:4px}.dashboard-section .notification-item{flex:0 0 min(360px,85vw);min-width:0}.dashboard-section .notification-item strong,.dashboard-section .notification-item p{overflow:hidden;text-overflow:ellipsis}.dashboard-section .table-wrap{max-width:100%;overflow:auto}.dashboard-section .data-table{width:max-content;min-width:100%}@media(max-width:1180px){.dashboard-section .grid3{grid-template-columns:1fr}.dashboard-section .application-toolbar{grid-template-columns:1fr}.dashboard-section .application-toolbar .btn,.dashboard-section .application-toolbar .select{width:100%}}
+        .dashboard-section{font-size:14px}.dashboard-section>.wrap{max-width:1680px;padding-left:18px;padding-right:18px}.dashboard-section .dash-layout{grid-template-columns:190px minmax(0,1fr)!important;gap:16px}.dashboard-section .side{padding:14px;border-radius:18px}.dashboard-section .side-user{grid-template-columns:42px minmax(0,1fr);gap:10px;margin-bottom:14px;padding:8px}.dashboard-section .side-photo,.dashboard-section .side-user .icon{width:42px;height:42px}.dashboard-section .side-btn{min-height:42px;margin-bottom:5px;padding:9px 10px;font-size:14px}.dashboard-section .dashboard-main{gap:12px}.dashboard-section .notification-card{padding:14px}.dashboard-section .notification-card h3{font-size:18px;margin-bottom:10px!important}.dashboard-section .notification-item{flex-basis:min(300px,75vw);padding:10px 12px}.dashboard-section .notification-item strong{font-size:14px}.dashboard-section .notification-item p,.dashboard-section .notification-item span{font-size:12px}.dashboard-section .grid3{gap:10px}.dashboard-section .stat{padding:12px;border-radius:16px}.dashboard-section .stat .icon{width:42px;height:42px}.dashboard-section .stat-value{font-size:24px}.dashboard-section .dashboard-content-card{padding:14px}.dashboard-section .dashboard-content-card>div:first-child{margin-bottom:12px!important}.dashboard-section .application-toolbar{gap:8px;margin-bottom:12px;padding:8px;border-radius:16px}.dashboard-section .application-toolbar .search-inner{min-height:42px}.dashboard-section .input,.dashboard-section .select,.dashboard-section .textarea{padding:10px 12px;border-radius:12px}.dashboard-section .btn{padding:9px 14px;border-radius:12px;font-size:13px}.dashboard-section .data-table{font-size:11px}.dashboard-section .data-table th,.dashboard-section .data-table td{padding:8px 10px}.dashboard-section .table-primary{font-size:11px}.dashboard-section .table-secondary,.dashboard-section .table-tertiary{font-size:9px}.dashboard-section .friendly-app-table .candidate-stack{grid-template-columns:34px minmax(0,1fr);gap:8px}.dashboard-section .friendly-app-table .candidate-avatar{width:34px;height:34px;border-radius:12px}.dashboard-section .match-score strong{font-size:22px}.dashboard-section .match-score .score-bar{height:8px}.dashboard-section .status-pill{padding:5px 10px;font-size:11px}.dashboard-section .actions-cell{min-width:135px}.dashboard-section .friendly-app-table .table-mini-form .select{min-width:120px}.dashboard-section .friendly-app-table .table-mini-form{gap:6px}.dashboard-section .table-open-btn{margin-bottom:4px}@media(max-width:1180px){.dashboard-section .dash-layout{grid-template-columns:1fr!important}.dashboard-section .side{position:static}}
+        .dashboard-section .friendly-app-table .data-table{width:100%;min-width:0;table-layout:fixed}.dashboard-section .friendly-app-table th:nth-child(1),.dashboard-section .friendly-app-table td:nth-child(1){width:24%}.dashboard-section .friendly-app-table th:nth-child(2),.dashboard-section .friendly-app-table td:nth-child(2){width:15%}.dashboard-section .friendly-app-table th:nth-child(3),.dashboard-section .friendly-app-table td:nth-child(3){width:28%}.dashboard-section .friendly-app-table th:nth-child(4),.dashboard-section .friendly-app-table td:nth-child(4){width:9%}.dashboard-section .friendly-app-table th:nth-child(5),.dashboard-section .friendly-app-table td:nth-child(5){width:10%}.dashboard-section .friendly-app-table th:nth-child(6),.dashboard-section .friendly-app-table td:nth-child(6){width:14%}.dashboard-section .friendly-app-table .applicant-cell,.dashboard-section .friendly-app-table .job-cell,.dashboard-section .friendly-app-table .match-cell,.dashboard-section .friendly-app-table .status-cell,.dashboard-section .friendly-app-table .actions-cell,.dashboard-section .friendly-app-table .compact-progress{min-width:0}.dashboard-section .friendly-app-table .candidate-stack>div:last-child,.dashboard-section .friendly-app-table .job-cell,.dashboard-section .friendly-app-table .match-cell{min-width:0;overflow-wrap:anywhere}.dashboard-section .friendly-app-table .match-score{min-width:0}.dashboard-section .friendly-app-table .match-score .score-bar{max-width:100%}.dashboard-section .friendly-app-table .table-inline-actions{display:grid;grid-template-columns:1fr;gap:6px}.dashboard-section .friendly-app-table .table-inline-actions .btn,.dashboard-section .friendly-app-table .table-mini-form .btn,.dashboard-section .friendly-app-table .table-mini-form .select{width:100%;min-width:0}.dashboard-section .friendly-app-table .status-pill{white-space:normal}.dashboard-section .friendly-app-table .table-fit-wrap .match-details p{max-width:100%}
+        .requirement-breakdown{display:grid;gap:6px;margin-top:8px}.requirement-breakdown>strong{font-size:12px;color:#0f172a}.requirement-row{display:grid;grid-template-columns:74px minmax(90px,.85fr) minmax(0,1.15fr);gap:8px;align-items:start;border:1px solid #e0f2fe;border-radius:10px;background:#f8fbff;padding:8px}.requirement-row b{display:block;font-size:11px;line-height:1.25}.requirement-row small{display:block;margin-top:2px;color:#64748b;font-size:9px;font-weight:800}.requirement-row em{color:#475569;font-size:10px;font-style:normal;line-height:1.35}.requirement-status{display:inline-flex;justify-content:center;border-radius:999px;padding:4px 7px;font-size:9px;font-weight:950}.requirement-status.met{background:#dcfce7;color:#166534}.requirement-status.partial{background:#fef3c7;color:#92400e}.requirement-status.missing{background:#fee2e2;color:#991b1b}.requirement-status.unknown{background:#e2e8f0;color:#475569}body.theme-dark .requirement-breakdown>strong{color:#e5e7eb}body.theme-dark .requirement-row{border-color:#1e3a5f;background:#0f172a}body.theme-dark .requirement-row small,body.theme-dark .requirement-row em{color:#cbd5e1}@media(max-width:760px){.requirement-row{grid-template-columns:1fr}}
+        .user-overview{display:grid;gap:18px}.overview-panel{border:1px solid #e0f2fe;border-radius:20px;background:#fff;padding:18px;box-shadow:0 10px 24px rgba(14,165,233,.06)}.overview-primary{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:center;background:linear-gradient(135deg,#f8fbff,#eef7ff)}.overview-primary h3{margin-top:6px;font-size:24px}.overview-primary p{max-width:720px;margin:8px 0 0;color:#475569;line-height:1.65}.overview-actions{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end}.overview-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.overview-panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.overview-panel-head .tiny{color:#0369a1;font-weight:950}.pipeline-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.pipeline-summary div{border:1px solid #e0f2fe;border-radius:14px;background:#f8fbff;padding:12px}.pipeline-summary strong{display:block;font-size:22px}.pipeline-summary span{display:block;margin-top:4px;color:#64748b;font-size:12px;font-weight:900}.overview-latest{margin-top:14px;border-top:1px solid #e0f2fe;padding-top:14px}.overview-latest>span{display:block;margin-top:3px}.check-list{display:grid;gap:8px;margin-top:14px}.check-list span{border:1px solid #e0f2fe;border-radius:12px;background:#f8fbff;padding:10px 12px;color:#334155;font-size:13px;font-weight:900}.overview-list{display:grid;gap:10px}.overview-row{display:grid;gap:4px;border:1px solid #e0f2fe;border-radius:14px;background:#f8fbff;padding:12px;transition:.2s}.overview-row:hover{border-color:#7dd3fc;background:#f0f9ff}.overview-row span{color:#64748b;font-size:13px;font-weight:800}body.theme-dark .overview-panel,body.theme-dark .overview-primary,body.theme-dark .pipeline-summary div,body.theme-dark .check-list span,body.theme-dark .overview-row{border-color:#1e3a5f;background:#111827;color:#e5e7eb;box-shadow:none}body.theme-dark .overview-primary p,body.theme-dark .pipeline-summary span,body.theme-dark .overview-row span{color:#cbd5e1}@media(max-width:900px){.overview-primary,.overview-grid{grid-template-columns:1fr}.overview-actions{justify-content:flex-start}.pipeline-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:520px){.pipeline-summary{grid-template-columns:1fr}}
+        .profile-summary-pills{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.profile-summary-pills span{border:1px solid #bae6fd;border-radius:999px;background:#fff;padding:7px 11px;color:#0369a1;font-size:12px;font-weight:950}.friendly-task-list{display:grid;gap:8px}.task-item{display:grid;grid-template-columns:34px minmax(0,1fr) auto;gap:10px;align-items:center;border:1px solid #bae6fd;border-radius:14px;background:#f0f9ff;padding:10px 12px;transition:.2s}.task-item:hover{border-color:#38bdf8;background:#e0f2fe}.task-item.is-done{border-color:#bbf7d0;background:#f0fdf4}.task-dot{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:999px;background:#0ea5e9;color:#fff;font-size:11px;font-weight:950}.task-item.is-done .task-dot{background:#16a34a}.task-item strong{display:block;font-size:14px}.task-item small{display:block;margin-top:2px;color:#64748b;line-height:1.35}.task-item em{font-style:normal;color:#0369a1;font-size:12px;font-weight:950}.task-item.is-done em{color:#15803d}.recruiter-preview{display:grid;grid-template-columns:auto minmax(0,1fr);gap:12px;align-items:center;border:1px solid #e0f2fe;border-radius:16px;background:#f8fbff;padding:14px;margin-bottom:14px}.recruiter-preview span{display:block;margin-top:3px;color:#64748b;font-size:13px;font-weight:800}.recruiter-preview p{margin:6px 0 0;color:#0369a1;font-size:13px;font-weight:900;line-height:1.45}body.theme-dark .profile-summary-pills span,body.theme-dark .task-item,body.theme-dark .recruiter-preview{border-color:#1e3a5f;background:#111827;color:#e5e7eb}body.theme-dark .task-item small,body.theme-dark .recruiter-preview span{color:#cbd5e1}
+        .profile-tools{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:center}.profile-tools p{margin:6px 0 0;line-height:1.5}.profile-tool-actions{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end}.profile-tools [data-profile-tool-status]{grid-column:1/-1;color:#15803d;font-weight:900}@media(max-width:720px){.profile-tools{grid-template-columns:1fr}.profile-tool-actions{justify-content:flex-start}.profile-tool-actions .btn{width:100%}}@media print{.header,.footer,.side,.nav-actions,.profile-tools,.notification-card,.dashboard-main>.grid3{display:none!important}.dash-layout{display:block!important}.dashboard-content-card,.profile-section-card,.profile-hero-card{box-shadow:none!important}.section{padding:0!important}.wrap{max-width:none!important}}
         @media(max-width:1024px){.theme-mobile{display:inline-flex}.nav-actions .theme-toggle{display:none}}
         @media(max-width:1024px){.idea-grid,.journey-grid,.innovation-grid,.footer-top{grid-template-columns:1fr 1fr}.idea-card{min-height:360px}.footer-brand{font-size:64px}}
         @media(max-width:720px){.idea-grid,.journey-grid,.innovation-grid,.footer-top{grid-template-columns:1fr}.footer-bottom{align-items:flex-start;flex-direction:column}.idea-art{height:170px}.idea-art svg{width:150px;height:150px}.recruit-animation{padding:18px}.pipeline-track{height:170px}.pipeline-node{width:54px;height:54px;border-radius:18px;font-size:22px}.pipeline-stage small{font-size:11px}.pipeline-line{left:24px;right:24px;top:48px}.candidate-dot{top:39px}.offer-card{left:18px;right:auto;bottom:4px}}
@@ -4715,8 +5380,31 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
 	    <div class="wrap">
 	        <div class="section-title"><p class="eyebrow">Jobs</p><h2>Explore modern job listings</h2><p>Browse open jobs from companies and recruiters.</p></div>
         <?php if (isset($_GET['job']) && $selectedJob): ?>
+        <?php
+        $selectedJobTags = tags($selectedJob);
+        $selectedJobSaved = in_array((int) $selectedJob['id'], $savedJobIds, true);
+        $similarJobs = similar_jobs_for_job($allJobs, $selectedJob, 3);
+        $jobMatchInsights = (($user['role'] ?? '') === 'jobseeker') ? job_match_insights($selectedJob, $user) : null;
+        $currentUserEmail = (string) ($user['email'] ?? '');
+        $existingApplication = null;
+        if ($currentUserEmail !== '') {
+            foreach ($applicants as $applicationItem) {
+                if (
+                    (int) ($applicationItem['job_id'] ?? 0) === (int) ($selectedJob['id'] ?? 0)
+                    && (
+                        (int) ($applicationItem['user_id'] ?? 0) === (int) ($user['id'] ?? 0)
+                        || strtolower((string) ($applicationItem['applicant_email'] ?? '')) === strtolower($currentUserEmail)
+                    )
+                ) {
+                    $existingApplication = $applicationItem;
+                    break;
+                }
+            }
+        }
+        $deadlineText = !empty($selectedJob['expires_at']) ? date('M j, Y', strtotime((string) $selectedJob['expires_at'])) : 'Open until filled';
+        ?>
         <div class="job-detail-layout">
-            <aside class="card card-pad">
+            <aside class="card card-pad job-action-panel">
                 <a class="btn outline" style="width:100%;margin-bottom:18px" href="<?= h(app_url('jobs')) ?>">Back to Jobs</a>
                 <div class="job-top">
                     <span class="icon">ðŸ’¼</span>
@@ -4741,6 +5429,26 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                     <div>ðŸ“ <?= h($selectedJob['location']) ?></div>
                     <div>ðŸ’° <?= h($selectedJob['salary']) ?></div>
                 </div>
+                <div class="job-side-facts">
+                    <div><span>Deadline</span><strong><?= h($deadlineText) ?></strong></div>
+                </div>
+                <?php if ($existingApplication): ?>
+                    <div class="job-applied-note"><strong>Already applied</strong><span>Status: <?= h($existingApplication['status'] ?? 'New') ?></span></div>
+                    <a class="btn" style="width:100%;margin-top:14px" href="<?= h(application_page_url($existingApplication, 'user', 'applications')) ?>">Track Application</a>
+                <?php else: ?>
+                    <a class="btn" style="width:100%;margin-top:14px" href="#apply">Apply Now</a>
+                <?php endif; ?>
+                <?php if ($jobMatchInsights): ?>
+                    <div class="job-match-card">
+                        <div class="overview-panel-head"><h3>Fit Check</h3><strong><?= h((string) $jobMatchInsights['profile_score']) ?>%</strong></div>
+                        <div class="score-bar"><span style="width:<?= h((string) $jobMatchInsights['profile_score']) ?>%"></span></div>
+                        <div class="job-match-list">
+                            <span class="<?= $jobMatchInsights['has_cv'] ? 'ok' : '' ?>"><?= $jobMatchInsights['has_cv'] ? 'CV ready' : 'Upload CV before applying' ?></span>
+                            <span class="<?= $jobMatchInsights['location_match'] ? 'ok' : '' ?>"><?= $jobMatchInsights['location_match'] ? 'Location match' : 'Check location fit' ?></span>
+                            <span class="<?= $jobMatchInsights['matched_skills'] ? 'ok' : '' ?>"><?= $jobMatchInsights['matched_skills'] ? count($jobMatchInsights['matched_skills']) . ' matching skills' : 'Add matching skills' ?></span>
+                        </div>
+                    </div>
+                <?php endif; ?>
                 <div class="tags">
                     <?php foreach (tags($selectedJob) as $tag): ?>
                         <span class="tag"><?= h($tag) ?></span>
@@ -4773,13 +5481,46 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                     <div class="info"><div class="tiny muted">Company</div><strong><?= h($selectedJob['company']) ?></strong></div>
                     <?php if (!empty($selectedJob['expires_at'])): ?><div class="info"><div class="tiny muted">Deadline</div><strong><?= h(date('M j, Y', strtotime((string) $selectedJob['expires_at']))) ?></strong></div><?php endif; ?>
                 </div>
-                <h3 style="margin-bottom:12px">Description</h3>
-                <div class="job-rich-text"><?= rich_text_html($selectedJob['description'] ?? '') ?></div>
-                <?php if (!empty($selectedJob['requirements'])): ?>
-                    <h3 style="margin-top:28px;margin-bottom:12px">Requirements</h3>
-                    <div class="job-rich-text"><?= rich_text_html($selectedJob['requirements'] ?? '') ?></div>
+                <?php if ($jobMatchInsights): ?>
+                    <section class="job-section-card">
+                        <div class="overview-panel-head"><h3>Your Match</h3><a class="tiny" href="<?= h(app_url('user', ['tab' => 'settings'])) ?>">Improve profile</a></div>
+                        <div class="match-skill-grid">
+                            <div>
+                                <strong>Matched skills</strong>
+                                <div class="tags">
+                                    <?php if (!$jobMatchInsights['matched_skills']): ?><span class="tag">No exact tag matches yet</span><?php endif; ?>
+                                    <?php foreach ($jobMatchInsights['matched_skills'] as $skill): ?><span class="tag good"><?= h($skill) ?></span><?php endforeach; ?>
+                                </div>
+                            </div>
+                            <div>
+                                <strong>Useful skills to add</strong>
+                                <div class="tags">
+                                    <?php if (!$jobMatchInsights['missing_skills']): ?><span class="tag good">You cover the listed tags</span><?php endif; ?>
+                                    <?php foreach ($jobMatchInsights['missing_skills'] as $skill): ?><span class="tag"><?= h($skill) ?></span><?php endforeach; ?>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
                 <?php endif; ?>
-                <div class="card card-pad" style="margin-top:32px;background:#f8fafc">
+                <section class="job-section-card">
+                    <h3 style="margin-bottom:12px">About This Role</h3>
+                    <div class="job-rich-text"><?= rich_text_html($selectedJob['description'] ?? '') ?></div>
+                </section>
+                <?php if (!empty($selectedJob['requirements'])): ?>
+                    <section class="job-section-card">
+                        <h3 style="margin-bottom:12px">Requirements</h3>
+                        <div class="job-rich-text"><?= rich_text_html($selectedJob['requirements'] ?? '') ?></div>
+                    </section>
+                <?php endif; ?>
+                <section class="job-section-card">
+                    <div class="overview-panel-head"><h3>Company Snapshot</h3><a class="tiny" href="<?= h(app_url('companies')) ?>">View companies</a></div>
+                    <div class="company-snapshot-grid">
+                        <div><span>Company</span><strong><?= h($selectedJob['company']) ?></strong></div>
+                        <div><span>Industry</span><strong><?= h($selectedJob['industry'] ?? 'Not specified') ?></strong></div>
+                        <div><span>Work type</span><strong><?= h($selectedJob['type']) ?></strong></div>
+                    </div>
+                </section>
+                <div id="apply" class="card card-pad apply-card">
                     <h3 style="margin-bottom:16px">Apply Now</h3>
                     <?php if (!$user): ?>
                         <div class="profile-box">
@@ -4789,6 +5530,12 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                                 <a class="btn" href="<?= h(app_url('login')) ?>">Login</a>
                                 <a class="btn outline" href="<?= h(app_url('register')) ?>">Register</a>
                             </div>
+                        </div>
+                    <?php elseif ($existingApplication): ?>
+                        <div class="profile-box">
+                            <strong>You already applied for this job.</strong>
+                            <p class="tiny muted" style="margin:10px 0 18px">Current status: <?= h($existingApplication['status'] ?? 'New') ?>. Open your application to follow timeline updates and service messages.</p>
+                            <a class="btn" href="<?= h(application_page_url($existingApplication, 'user', 'applications')) ?>">Track Application</a>
                         </div>
                     <?php else: ?>
                         <form class="form" method="post" enctype="multipart/form-data">
@@ -4824,6 +5571,20 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                         </form>
                     <?php endif; ?>
                 </div>
+                <?php if ($similarJobs): ?>
+                    <section class="job-section-card">
+                        <div class="overview-panel-head"><h3>Similar Jobs</h3><a class="tiny" href="<?= h(app_url('jobs')) ?>">Browse all</a></div>
+                        <div class="similar-job-grid">
+                            <?php foreach ($similarJobs as $similarJob): ?>
+                                <a class="similar-job-card" href="<?= h(app_url('jobs', ['job' => $similarJob['id']])) ?>">
+                                    <strong><?= h($similarJob['title'] ?? 'Job') ?></strong>
+                                    <span><?= h($similarJob['company'] ?? '') ?> - <?= h($similarJob['location'] ?? '') ?></span>
+                                    <em><?= h($similarJob['salary'] ?? '') ?></em>
+                                </a>
+                            <?php endforeach; ?>
+                        </div>
+                    </section>
+                <?php endif; ?>
             </main>
         </div>
         <?php else: ?>
@@ -5131,8 +5892,22 @@ foreach ($publishedPosts as $post) {
                     <span class="badge"><?= h($selectedPost['category'] ?: 'Career Advice') ?></span>
                     <h3 style="margin-top:18px"><?= h($selectedPost['title']) ?></h3>
                     <p class="tiny muted" style="line-height:1.7">By <?= h($selectedPost['author_name'] ?: 'KDXJOBS Team') ?><br><?= h(date('M j, Y', strtotime((string) $selectedPost['created_at']))) ?></p>
+                    <?php $recentPosts = array_values(array_filter($publishedPosts, static fn(array $post): bool => (int) $post['id'] !== (int) $selectedPost['id'])); ?>
+                    <?php if ($recentPosts): ?>
+                        <div class="blog-recent-list">
+                            <h3 style="margin-bottom:14px">Recent Blog Posts</h3>
+                            <div class="grid">
+                                <?php foreach (array_slice($recentPosts, 0, 4) as $post): ?>
+                                    <a class="applicant" href="<?= h(app_url('blog', ['post' => $post['id']])) ?>">
+                                        <span><strong><?= h($post['title']) ?></strong><br><span class="tiny muted"><?= h(date('M j, Y', strtotime((string) $post['created_at']))) ?></span></span>
+                                    </a>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
+                    <?php endif; ?>
                 </aside>
                 <main class="card job-detail-main">
+                    <?php if (!empty($selectedPost['cover_image'])): ?><img class="blog-cover detail" src="<?= h(download_url((string) $selectedPost['cover_image'])) ?>" alt="<?= h($selectedPost['title']) ?>"><?php endif; ?>
                     <p class="eyebrow" style="margin-bottom:8px"><?= h($selectedPost['category'] ?: 'Career Advice') ?></p>
                     <h2><?= h($selectedPost['title']) ?></h2>
                     <?php if (!empty($selectedPost['excerpt'])): ?><p class="lead" style="margin-top:16px"><?= h($selectedPost['excerpt']) ?></p><?php endif; ?>
@@ -5140,13 +5915,14 @@ foreach ($publishedPosts as $post) {
                 </main>
             </div>
         <?php else: ?>
-            <div class="section-title"><p class="eyebrow">Blog</p><h2>Career notes from KDXJOBS</h2><p>Practical advice for job seekers, employers, and recruiters building stronger hiring habits.</p></div>
+            <div class="section-title"><p class="eyebrow">Blog</p><h2>Recent Blog Posts</h2><p>Practical advice for job seekers, employers, and recruiters building stronger hiring habits.</p></div>
             <div class="grid grid3">
                 <?php if (!$publishedPosts): ?>
                     <div class="card empty-state" style="grid-column:1/-1"><h3>No blog posts yet</h3><p class="muted">Admins can publish the first post from the admin dashboard.</p></div>
                 <?php endif; ?>
                 <?php foreach ($publishedPosts as $post): ?>
                     <article class="card job-card card-pad">
+                        <?php if (!empty($post['cover_image'])): ?><img class="blog-cover blog-card-image" src="<?= h(download_url((string) $post['cover_image'])) ?>" alt="<?= h($post['title']) ?>"><?php endif; ?>
                         <span class="badge"><?= h($post['category'] ?: 'Career Advice') ?></span>
                         <h3 style="margin-top:18px"><?= h($post['title']) ?></h3>
                         <p class="muted" style="line-height:1.75"><?= h($post['excerpt'] ?: substr(strip_tags((string) $post['content']), 0, 150) . '...') ?></p>
@@ -5440,8 +6216,12 @@ $applicationsTotal = count($filteredDashboardApplications);
 $applicationsTotalPages = max(1, (int) ceil($applicationsTotal / $applicationsPerPage));
 $applicationsPage = min($applicationsPage, $applicationsTotalPages);
 $pagedDashboardApplications = array_slice($filteredDashboardApplications, ($applicationsPage - 1) * $applicationsPerPage, $applicationsPerPage);
+$userStatusCounts = array_count_values(array_map(static fn(array $application): string => (string) ($application['status'] ?? 'New'), $userApplications));
+$profileGaps = $isUser && $user ? profile_missing_items($user) : [];
+$nextApplication = $isUser ? ($userApplications[0] ?? null) : null;
+$recommendedJobs = $isUser && $user ? recommended_jobs_for_user($allJobs, $user, $userApplications, $savedJobIds, 4) : [];
 $dashboardMenu = $isUser
-    ? ['profile' => 'Profile', 'applications' => 'My Applications', 'saved' => 'Saved Jobs', 'saved_searches' => 'Saved Searches', 'settings' => 'Settings']
+    ? ['overview' => 'Overview', 'profile' => 'Profile', 'applications' => 'My Applications', 'saved' => 'Saved Jobs', 'saved_searches' => 'Saved Searches', 'settings' => 'Settings']
         : ($isCompany
         ? ['profile' => 'Profile', 'applications' => 'Applicants', 'post_job' => 'Post a Job', 'manage' => 'Manage Jobs', 'statistics' => 'Statistics', 'settings' => 'Settings']
         : (is_super_admin()
@@ -5456,7 +6236,7 @@ $chosenSkills = selected_skills($user['skills'] ?? '');
 $profileScore = $user ? profile_score($user) : 0;
 $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? ($user['company_name'] ?? 'BlueTech') : ($user['full_name'] ?? 'Admin'));
 ?>
-<section class="section">
+<section class="section dashboard-section">
     <div class="wrap">
         <div class="dash-hero"><h2><?= h($title) ?></h2><p><?= h($subtitle) ?></p></div>
         <div class="dash-layout">
@@ -5466,7 +6246,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                     <a class="side-btn <?= $tab === $key ? 'active' : '' ?>" href="<?= h(app_url($page, ['tab' => $key])) ?>">⚙️ <?= h($item) ?></a>
                 <?php endforeach; ?>
             </aside>
-            <main class="grid">
+            <main class="grid dashboard-main">
                 <?php if ($user): ?>
                     <div id="notification-watch" data-latest-notification-id="<?= h((string) (int) ($notifications[0]['id'] ?? 0)) ?>" hidden></div>
                 <?php endif; ?>
@@ -5489,45 +6269,323 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                     <div class="card stat"><span class="icon"><?= $isUser ? '⭐' : ($isCompany ? '👥' : '🏢') ?></span><div><span class="tiny muted"><?= $isUser ? 'Saved Jobs' : ($isCompany ? 'Applicants' : 'My Applications') ?></span><div class="stat-value"><?= $isUser ? h((string) count($savedJobs)) : ($isCompany ? h((string) count($companyApplications)) : h((string) count($recruiterApplications))) ?></div></div></div>
                     <div class="card stat"><span class="icon">📊</span><div><span class="tiny muted"><?= $isUser ? 'Profile Score' : ($isCompany ? 'Profile Score' : 'Open Jobs') ?></span><div class="stat-value"><?= ($isUser || $isCompany) ? h((string) $profileScore) . '%' : h($stats['openJobs']) ?></div><?php if ($isUser || $isCompany): ?><div class="score-bar"><span style="width:<?= h((string) $profileScore) ?>%"></span></div><?php endif; ?></div></div>
                 </div>
-                <div class="card card-pad">
+                <div class="card card-pad dashboard-content-card">
                     <div style="display:flex;justify-content:space-between;gap:16px;margin-bottom:20px">
                         <h3><?= h($tabTitle) ?></h3>
                         <?php if ($tab === 'manage' && !$isUser): ?><a class="btn" href="<?= h(app_url($page, ['tab' => 'settings'])) ?>">Edit</a><?php endif; ?>
                     </div>
-                    <?php if ($tab === 'profile' && $isUser): ?>
-                        <div class="profile-header">
-                            <?= profile_photo_html($user['profile_photo'] ?? null, (string) $displayName, 'profile-photo profile-photo-large') ?>
-                            <div>
-                                <h3><?= h((string) $displayName) ?></h3>
-                                <p class="tiny muted">Profile photo and account details</p>
+                    <?php if ($tab === 'overview' && $isUser): ?>
+                        <div class="user-overview">
+                            <section class="overview-panel overview-primary">
+                                <div>
+                                    <span class="tiny muted">Next best step</span>
+                                    <h3><?= $profileScore < 100 ? 'Complete your candidate profile' : ($nextApplication ? 'Track your latest application' : 'Start applying to matched jobs') ?></h3>
+                                    <p><?= $profileScore < 100 ? 'A stronger profile helps recruiters understand your fit before they open your CV.' : ($nextApplication ? 'Your newest application is visible here with status, timeline, and service chat.' : 'Your dashboard will fill with progress once you apply or save roles.') ?></p>
+                                </div>
+                                <div class="overview-actions">
+                                    <?php if ($profileScore < 100): ?>
+                                        <a class="btn" href="<?= h(app_url('user', ['tab' => 'settings'])) ?>">Update Profile</a>
+                                    <?php elseif ($nextApplication): ?>
+                                        <a class="btn" href="<?= h(application_page_url($nextApplication, 'user', 'applications')) ?>">Open Application</a>
+                                    <?php else: ?>
+                                        <a class="btn" href="<?= h(app_url('jobs')) ?>">Browse Jobs</a>
+                                    <?php endif; ?>
+                                    <a class="btn outline" href="<?= h(app_url('user', ['tab' => 'applications'])) ?>">My Applications</a>
+                                </div>
+                            </section>
+
+                            <div class="overview-grid">
+                                <section class="overview-panel">
+                                    <div class="overview-panel-head">
+                                        <h3>Application Pipeline</h3>
+                                        <a class="tiny" href="<?= h(app_url('user', ['tab' => 'applications'])) ?>">View all</a>
+                                    </div>
+                                    <div class="pipeline-summary">
+                                        <?php foreach (['New', 'Reviewed', 'Shortlisted', 'Interview', 'Accepted', 'Rejected'] as $statusName): ?>
+                                            <div><strong><?= h((string) ($userStatusCounts[$statusName] ?? 0)) ?></strong><span><?= h($statusName) ?></span></div>
+                                        <?php endforeach; ?>
+                                    </div>
+                                    <?php if ($nextApplication): ?>
+                                        <div class="overview-latest">
+                                            <strong><?= h($nextApplication['job_title'] ?? 'Latest application') ?></strong>
+                                            <span class="tiny muted"><?= h($nextApplication['company'] ?? '') ?></span>
+                                            <?= progress_html((string) ($nextApplication['status'] ?? 'New')) ?>
+                                        </div>
+                                    <?php else: ?>
+                                        <p class="tiny muted">No applications yet. Apply for a role and its progress will appear here.</p>
+                                    <?php endif; ?>
+                                </section>
+
+                                <section class="overview-panel">
+                                    <div class="overview-panel-head">
+                                        <h3>Profile Readiness</h3>
+                                        <strong><?= h((string) $profileScore) ?>%</strong>
+                                    </div>
+                                    <div class="score-bar"><span style="width:<?= h((string) $profileScore) ?>%"></span></div>
+                                    <div class="check-list">
+                                        <?php foreach (array_slice($profileGaps, 0, 4) as $gap): ?>
+                                            <span><?= h($gap) ?></span>
+                                        <?php endforeach; ?>
+                                        <?php if (!$profileGaps): ?>
+                                            <span>Profile is complete</span>
+                                        <?php endif; ?>
+                                    </div>
+                                </section>
+                            </div>
+
+                            <div class="overview-grid">
+                                <section class="overview-panel">
+                                    <div class="overview-panel-head">
+                                        <h3>Recommended Jobs</h3>
+                                        <a class="tiny" href="<?= h(app_url('jobs')) ?>">Browse</a>
+                                    </div>
+                                    <div class="overview-list">
+                                        <?php if (!$recommendedJobs): ?>
+                                            <p class="tiny muted">Add skills to your profile to unlock better matches.</p>
+                                        <?php endif; ?>
+                                        <?php foreach ($recommendedJobs as $job): ?>
+                                            <a class="overview-row" href="<?= h(app_url('jobs', ['job' => $job['id']])) ?>">
+                                                <strong><?= h($job['title'] ?? 'Job') ?></strong>
+                                                <span><?= h($job['company'] ?? '') ?> - <?= h($job['location'] ?? '') ?></span>
+                                            </a>
+                                        <?php endforeach; ?>
+                                    </div>
+                                </section>
+
+                                <section class="overview-panel">
+                                    <div class="overview-panel-head">
+                                        <h3>Saved Shortlist</h3>
+                                        <a class="tiny" href="<?= h(app_url('user', ['tab' => 'saved'])) ?>">View all</a>
+                                    </div>
+                                    <div class="overview-list">
+                                        <?php if (!$savedJobs): ?>
+                                            <p class="tiny muted">Save interesting roles from the Jobs page and compare them here.</p>
+                                        <?php endif; ?>
+                                        <?php foreach (array_slice($savedJobs, 0, 4) as $job): ?>
+                                            <a class="overview-row" href="<?= h(app_url('jobs', ['job' => $job['id']])) ?>">
+                                                <strong><?= h($job['title'] ?? 'Job') ?></strong>
+                                                <span><?= h($job['company'] ?? '') ?> - saved <?= h(date('M j', strtotime((string) ($job['saved_at'] ?? 'now')))) ?></span>
+                                            </a>
+                                        <?php endforeach; ?>
+                                    </div>
+                                </section>
                             </div>
                         </div>
-                        <div class="profile-grid">
-                            <?php
-                            $cvDisplay = !empty($user['cv_file'])
-                                ? cv_link_html($user['cv_file'], 'View uploaded CV')
-                                : 'No CV uploaded';
-                            $profileItems = ['Full Name'=>$user['full_name'] ?? 'Zagros Baban','Email'=>$user['email'] ?? 'zagros@example.com','Phone'=>$user['phone'] ?? '+964 750 000 0000','Location'=>$user['location'] ?? 'Not added','Skills'=>$user['skills'] ?? 'No skills selected','CV'=>$cvDisplay];
-                            if (!empty($user['cv_ai_summary'])) {
-                                $profileItems['AI CV Screening'] = $user['cv_ai_summary'];
-                            }
-                            foreach ($profileItems as $k=>$v):
-                            ?>
-                            <div class="profile-box"><span class="tiny" style="color:#0369a1;font-weight:900"><?= h($k) ?></span><br><strong><?= $k === 'CV' ? $v : h($v) ?></strong></div>
-                            <?php endforeach; ?>
+                    <?php elseif ($tab === 'profile' && $isUser): ?>
+                        <?php
+                        $cvDisplay = !empty($user['cv_file'])
+                            ? cv_link_html($user['cv_file'], 'Open CV')
+                            : 'No CV uploaded';
+                        $profileSkillList = selected_skills($user['skills'] ?? '');
+                        $candidateTasks = candidate_profile_tasks($user);
+                        $candidateProfileSummary = implode("\n", array_filter([
+                            'Candidate: ' . (string) $displayName,
+                            'Email: ' . (string) ($user['email'] ?? ''),
+                            'Phone: ' . (string) ($user['phone'] ?: 'Not added'),
+                            'Location: ' . (string) ($user['location'] ?: 'Not added'),
+                            'Skills: ' . ($profileSkillList ? implode(', ', $profileSkillList) : 'Not added'),
+                            'CV: ' . (!empty($user['cv_file']) ? 'Uploaded' : 'Not uploaded'),
+                            'Applications: ' . count($userApplications),
+                            'Saved jobs: ' . count($savedJobs),
+                        ]));
+                        ?>
+                        <div class="friendly-profile">
+                            <section class="profile-hero-card">
+                                <?= profile_photo_html($user['profile_photo'] ?? null, (string) $displayName, 'profile-photo profile-photo-large') ?>
+                                <div class="profile-hero-copy">
+                                    <span class="tiny muted">Candidate Profile</span>
+                                    <h3><?= h((string) $displayName) ?></h3>
+                                    <p><?= h($user['location'] ?: 'Add your location so recruiters know where you can work.') ?></p>
+                                    <div class="profile-summary-pills">
+                                        <span><?= h((string) count($userApplications)) ?> applications</span>
+                                        <span><?= h((string) count($savedJobs)) ?> saved jobs</span>
+                                        <span><?= $profileSkillList ? h((string) count($profileSkillList)) . ' skills' : 'Skills needed' ?></span>
+                                    </div>
+                                    <div class="profile-quick-actions">
+                                        <a class="btn" href="<?= h(app_url('user', ['tab' => 'settings'])) ?>">Edit Profile</a>
+                                        <a class="btn outline" href="<?= h(app_url('jobs')) ?>">Find Jobs</a>
+                                    </div>
+                                </div>
+                                <div class="profile-score-card">
+                                    <strong><?= h((string) $profileScore) ?>%</strong>
+                                    <span>Profile ready</span>
+                                    <div class="score-bar"><span style="width:<?= h((string) $profileScore) ?>%"></span></div>
+                                </div>
+                            </section>
+
+                            <section class="profile-section-card profile-tools" data-profile-tools data-profile-summary="<?= h($candidateProfileSummary) ?>">
+                                <div>
+                                    <h3>Profile Tools</h3>
+                                    <p class="tiny muted">Use these when you need to share your candidate snapshot outside the dashboard.</p>
+                                </div>
+                                <div class="profile-tool-actions">
+                                    <button class="btn outline" type="button" data-copy-profile>Copy Summary</button>
+                                    <button class="btn outline" type="button" data-print-profile>Print Profile</button>
+                                </div>
+                                <span class="tiny muted" data-profile-tool-status></span>
+                            </section>
+
+                            <div class="profile-friendly-grid">
+                                <section class="profile-section-card">
+                                    <div class="overview-panel-head">
+                                        <h3>Contact</h3>
+                                        <a class="tiny" href="<?= h(app_url('user', ['tab' => 'settings'])) ?>">Update</a>
+                                    </div>
+                                    <div class="profile-detail-list">
+                                        <div><span>Email</span><strong><?= h($user['email'] ?? 'Not added') ?></strong></div>
+                                        <div><span>Phone</span><strong><?= h($user['phone'] ?: 'Not added') ?></strong></div>
+                                        <div><span>Location</span><strong><?= h($user['location'] ?: 'Not added') ?></strong></div>
+                                    </div>
+                                </section>
+
+                                <section class="profile-section-card">
+                                    <div class="overview-panel-head">
+                                        <h3>Finish Setup</h3>
+                                        <span class="tiny"><?= h((string) count(array_filter($candidateTasks, static fn(array $task): bool => $task['done']))) ?>/<?= h((string) count($candidateTasks)) ?> done</span>
+                                    </div>
+                                    <div class="friendly-task-list">
+                                        <?php foreach ($candidateTasks as $task): ?>
+                                            <a class="task-item <?= $task['done'] ? 'is-done' : '' ?>" href="<?= h(app_url('user', ['tab' => 'settings'])) ?>">
+                                                <span class="task-dot"><?= $task['done'] ? 'OK' : '!' ?></span>
+                                                <span><strong><?= h($task['label']) ?></strong><small><?= h($task['detail']) ?></small></span>
+                                                <em><?= $task['done'] ? 'Done' : 'Add' ?></em>
+                                            </a>
+                                        <?php endforeach; ?>
+                                    </div>
+                                </section>
+                            </div>
+
+                            <div class="profile-friendly-grid">
+                                <section class="profile-section-card">
+                                    <div class="overview-panel-head">
+                                        <h3>Skills</h3>
+                                        <a class="tiny" href="<?= h(app_url('user', ['tab' => 'settings'])) ?>">Edit skills</a>
+                                    </div>
+                                    <div class="skill-chip-list">
+                                        <?php if (!$profileSkillList): ?>
+                                            <p class="tiny muted">Add skills to improve recommendations and recruiter matching.</p>
+                                        <?php endif; ?>
+                                        <?php foreach ($profileSkillList as $skill): ?>
+                                            <span><?= h($skill) ?></span>
+                                        <?php endforeach; ?>
+                                    </div>
+                                </section>
+
+                                <section class="profile-section-card">
+                                    <div class="overview-panel-head">
+                                        <h3>CV</h3>
+                                        <a class="tiny" href="<?= h(app_url('user', ['tab' => 'settings'])) ?>">Upload</a>
+                                    </div>
+                                    <div class="cv-card">
+                                        <strong><?= !empty($user['cv_file']) ? 'CV is uploaded' : 'CV needed' ?></strong>
+                                        <p class="tiny muted"><?= !empty($user['cv_file']) ? 'Recruiters can review your CV when you apply.' : 'Upload a PDF CV so applications are stronger.' ?></p>
+                                        <div><?= $cvDisplay ?></div>
+                                    </div>
+                                    <?php if (!empty($user['cv_ai_summary'])): ?>
+                                        <div class="cv-card soft">
+                                            <strong>AI CV Summary</strong>
+                                            <p class="tiny muted"><?= h($user['cv_ai_summary']) ?></p>
+                                        </div>
+                                    <?php endif; ?>
+                                </section>
+                            </div>
+
+                            <section class="profile-section-card">
+                                <div class="overview-panel-head">
+                                    <h3>Profile Preview</h3>
+                                    <a class="tiny" href="<?= h(app_url('user', ['tab' => 'overview'])) ?>">Overview</a>
+                                </div>
+                                <div class="recruiter-preview">
+                                    <?= profile_photo_html($user['profile_photo'] ?? null, (string) $displayName, 'profile-photo') ?>
+                                    <div>
+                                        <strong><?= h((string) $displayName) ?></strong>
+                                        <span><?= h(($user['location'] ?? '') ?: 'Location not added') ?></span>
+                                        <p><?= $profileSkillList ? h(implode(', ', array_slice($profileSkillList, 0, 5))) : 'Skills not added yet' ?></p>
+                                    </div>
+                                </div>
+                                <div class="profile-activity-grid">
+                                    <a href="<?= h(app_url('user', ['tab' => 'applications'])) ?>"><strong><?= h((string) count($userApplications)) ?></strong><span>Applications</span></a>
+                                    <a href="<?= h(app_url('user', ['tab' => 'saved'])) ?>"><strong><?= h((string) count($savedJobs)) ?></strong><span>Saved jobs</span></a>
+                                    <a href="<?= h(app_url('user', ['tab' => 'saved_searches'])) ?>"><strong><?= h((string) count($savedSearches)) ?></strong><span>Saved searches</span></a>
+                                </div>
+                            </section>
                         </div>
                     <?php elseif ($tab === 'profile' && $isCompany): ?>
-                        <div class="profile-header">
-                            <?= profile_photo_html($user['profile_photo'] ?? null, (string) $displayName, 'profile-photo profile-photo-large') ?>
-                            <div>
-                                <h3><?= h((string) $displayName) ?></h3>
-                                <p class="tiny muted">Company account profile</p>
+                        <?php
+                        $companyTasks = company_profile_tasks($user);
+                        $companyProfileSummary = implode("\n", array_filter([
+                            'Company: ' . (string) $displayName,
+                            'Email: ' . (string) ($user['email'] ?? ''),
+                            'Phone: ' . (string) ($user['phone'] ?: 'Not added'),
+                            'Industry: ' . (string) ($user['industry'] ?: 'Not added'),
+                            'Location: ' . (string) ($user['location'] ?: 'Not added'),
+                            'Active jobs: ' . count($companyJobs),
+                            'Applicants: ' . count($companyApplications),
+                        ]));
+                        ?>
+                        <div class="friendly-profile">
+                            <section class="profile-hero-card">
+                                <?= profile_photo_html($user['profile_photo'] ?? null, (string) $displayName, 'profile-photo profile-photo-large') ?>
+                                <div class="profile-hero-copy">
+                                    <span class="tiny muted">Company Profile</span>
+                                    <h3><?= h((string) $displayName) ?></h3>
+                                    <p><?= h(($user['industry'] ?? '') ? (($user['industry'] ?? '') . ' company in ' . ($user['location'] ?: 'your market')) : 'Add industry and location so candidates understand your company faster.') ?></p>
+                                    <div class="profile-summary-pills">
+                                        <span><?= h((string) count($companyJobs)) ?> active jobs</span>
+                                        <span><?= h((string) count($companyApplications)) ?> applicants</span>
+                                        <span><?= ($user['industry'] ?? '') ? h($user['industry']) : 'Industry needed' ?></span>
+                                    </div>
+                                    <div class="profile-quick-actions">
+                                        <a class="btn" href="<?= h(app_url('company', ['tab' => 'settings'])) ?>">Edit Profile</a>
+                                        <a class="btn outline" href="<?= h(app_url('company', ['tab' => 'post_job'])) ?>">Post Job</a>
+                                    </div>
+                                </div>
+                                <div class="profile-score-card">
+                                    <strong><?= h((string) $profileScore) ?>%</strong>
+                                    <span>Profile ready</span>
+                                    <div class="score-bar"><span style="width:<?= h((string) $profileScore) ?>%"></span></div>
+                                </div>
+                            </section>
+                            <section class="profile-section-card profile-tools" data-profile-tools data-profile-summary="<?= h($companyProfileSummary) ?>">
+                                <div>
+                                    <h3>Profile Tools</h3>
+                                    <p class="tiny muted">Copy a company snapshot for messages, notes, or hiring follow-up.</p>
+                                </div>
+                                <div class="profile-tool-actions">
+                                    <button class="btn outline" type="button" data-copy-profile>Copy Summary</button>
+                                    <button class="btn outline" type="button" data-print-profile>Print Profile</button>
+                                </div>
+                                <span class="tiny muted" data-profile-tool-status></span>
+                            </section>
+                            <div class="profile-friendly-grid">
+                                <section class="profile-section-card">
+                                    <div class="overview-panel-head"><h3>Company Details</h3><a class="tiny" href="<?= h(app_url('company', ['tab' => 'settings'])) ?>">Update</a></div>
+                                    <div class="profile-detail-list">
+                                        <div><span>Company</span><strong><?= h($user['company_name'] ?: 'Not added') ?></strong></div>
+                                        <div><span>Email</span><strong><?= h($user['email'] ?? 'Not added') ?></strong></div>
+                                        <div><span>Phone</span><strong><?= h($user['phone'] ?: 'Not added') ?></strong></div>
+                                        <div><span>Industry</span><strong><?= h($user['industry'] ?: 'Not added') ?></strong></div>
+                                        <div><span>Location</span><strong><?= h($user['location'] ?: 'Not added') ?></strong></div>
+                                    </div>
+                                </section>
+                                <section class="profile-section-card">
+                                    <div class="overview-panel-head"><h3>Hiring Snapshot</h3><a class="tiny" href="<?= h(app_url('company', ['tab' => 'manage'])) ?>">Manage</a></div>
+                                    <div class="profile-activity-grid">
+                                        <a href="<?= h(app_url('company', ['tab' => 'manage'])) ?>"><strong><?= h((string) count($companyJobs)) ?></strong><span>Active jobs</span></a>
+                                        <a href="<?= h(app_url('company', ['tab' => 'applications'])) ?>"><strong><?= h((string) count($companyApplications)) ?></strong><span>Applicants</span></a>
+                                        <a href="<?= h(app_url('company', ['tab' => 'post_job'])) ?>"><strong>+</strong><span>Post a job</span></a>
+                                    </div>
+                                    <div class="friendly-task-list" style="margin-top:14px">
+                                        <?php foreach ($companyTasks as $task): ?>
+                                            <a class="task-item <?= $task['done'] ? 'is-done' : '' ?>" href="<?= h(app_url('company', ['tab' => 'settings'])) ?>">
+                                                <span class="task-dot"><?= $task['done'] ? 'OK' : '!' ?></span>
+                                                <span><strong><?= h($task['label']) ?></strong><small><?= h($task['detail']) ?></small></span>
+                                                <em><?= $task['done'] ? 'Done' : 'Add' ?></em>
+                                            </a>
+                                        <?php endforeach; ?>
+                                    </div>
+                                </section>
                             </div>
-                        </div>
-                        <div class="profile-grid">
-                            <?php foreach (['Company'=>$user['company_name'] ?? 'BlueTech','Email'=>$user['email'] ?? 'company@example.com','Phone'=>$user['phone'] ?? '+964 750 111 1111','Industry'=>$user['industry'] ?? 'Data & AI','Location'=>$user['location'] ?? 'Erbil, Iraq'] as $k=>$v): ?>
-                            <div class="profile-box"><span class="tiny" style="color:#0369a1;font-weight:900"><?= h($k) ?></span><br><strong><?= h($v) ?></strong></div>
-                            <?php endforeach; ?>
                         </div>
                     <?php elseif ($tab === 'profile'): ?>
                         <div class="profile-header">
@@ -5994,37 +7052,76 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                             </div>
                         </div>
                     <?php elseif ($tab === 'blog' && is_admin_role()): ?>
-                        <div class="auth-grid" style="align-items:start">
-                            <form class="form card-pad" method="post" style="background:#f8fafc;border-radius:20px">
+                        <?php
+                        $editingBlogPost = null;
+                        $editingBlogPostId = (int) ($_GET['edit_post'] ?? 0);
+                        if ($editingBlogPostId > 0) {
+                            foreach ($blogPosts as $post) {
+                                if ((int) $post['id'] === $editingBlogPostId) {
+                                    $editingBlogPost = $post;
+                                    break;
+                                }
+                            }
+                        }
+                        $blogFormAction = $editingBlogPost ? 'update_blog_post' : 'create_blog_post';
+                        ?>
+                        <div>
+                            <form class="form card-pad blog-admin-form" method="post" enctype="multipart/form-data" style="background:#f8fafc;border-radius:20px">
                                 <?= csrf_input() ?>
-                                <input type="hidden" name="action" value="create_blog_post">
-                                <h3>Publish Blog Post</h3>
-                                <label class="label">Title<input class="input" required name="title" placeholder="Example: How to prepare for your first interview"></label>
-                                <label class="label">Category<input class="input" name="category" value="Career Advice" placeholder="Career Advice"></label>
-                                <label class="label">Excerpt<textarea class="textarea" name="excerpt" rows="3" placeholder="Short summary shown on the blog cards"></textarea></label>
+                                <input type="hidden" name="action" value="<?= h($blogFormAction) ?>">
+                                <?php if ($editingBlogPost): ?><input type="hidden" name="blog_post_id" value="<?= h((string) $editingBlogPost['id']) ?>"><?php endif; ?>
+                                <h3><?= $editingBlogPost ? 'Edit Blog Post' : 'Publish Blog Post' ?></h3>
+                                <?php if ($editingBlogPost): ?>
+                                    <div class="profile-box">
+                                        <strong>Editing: <?= h($editingBlogPost['title']) ?></strong>
+                                        <p class="tiny muted" style="margin:8px 0 0">Saving will update this post. Choose a new photo only if you want to replace the current one.</p>
+                                    </div>
+                                <?php endif; ?>
+                                <label class="label">Title<input class="input" required name="title" value="<?= h($editingBlogPost['title'] ?? '') ?>" placeholder="Example: How to prepare for your first interview"></label>
+                                <label class="label">Category<input class="input" name="category" value="<?= h($editingBlogPost['category'] ?? 'Career Advice') ?>" placeholder="Career Advice"></label>
+                                <label class="label">Blog Photo
+                                    <input class="input" type="file" name="cover_image" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp" data-image-preview-target="blog-cover-preview">
+                                    <?php $currentCover = trim((string) ($editingBlogPost['cover_image'] ?? '')); ?>
+                                    <img id="blog-cover-preview" class="blog-cover image-preview <?= $currentCover !== '' ? 'has-image' : '' ?>" src="<?= $currentCover !== '' ? h(download_url($currentCover)) : '' ?>" alt="">
+                                    <span class="tiny muted">PNG, JPG, or WebP. This appears on the Blog page and article view.</span>
+                                </label>
+                                <label class="label">Excerpt<textarea class="textarea" name="excerpt" rows="3" placeholder="Short summary shown on the blog cards"><?= h($editingBlogPost['excerpt'] ?? '') ?></textarea></label>
                                 <label class="label">Content
                                     <div class="editor-wrap quill-editor-wrap" data-quill-editor>
                                         <div class="quill-editor" data-placeholder="Write the full blog article with headings, lists, and clear sections."></div>
-                                        <textarea class="rich-editor-source" name="content"></textarea>
+                                        <textarea class="rich-editor-source" name="content"><?= h($editingBlogPost['content'] ?? '') ?></textarea>
                                     </div>
                                 </label>
-                                <label class="label">Status<select class="select" name="status"><option value="published">Published</option><option value="draft">Draft</option></select></label>
-                                <button class="btn">Save Blog Post</button>
+                                <label class="label">Status<select class="select" name="status"><option value="published" <?= (($editingBlogPost['status'] ?? 'published') === 'published') ? 'selected' : '' ?>>Published</option><option value="draft" <?= (($editingBlogPost['status'] ?? '') === 'draft') ? 'selected' : '' ?>>Draft</option></select></label>
+                                <div class="actions">
+                                    <button class="btn"><?= $editingBlogPost ? 'Update Blog Post' : 'Save Blog Post' ?></button>
+                                    <?php if ($editingBlogPost): ?><a class="btn outline" href="<?= h(app_url('admin', ['tab' => 'blog'])) ?>">Cancel Edit</a><?php endif; ?>
+                                </div>
                             </form>
-                            <div class="grid">
-                                <h3>Recent Blog Posts</h3>
+                            <div class="grid blog-manage-list">
+                                <h3>Manage Blog Posts</h3>
                                 <?php if (!$blogPosts): ?><div class="profile-box"><strong>No posts yet.</strong><p class="tiny muted">Create the first article for the public blog.</p></div><?php endif; ?>
-                                <?php foreach (array_slice($blogPosts, 0, 6) as $post): ?>
-                                    <div class="applicant">
+                                <?php foreach ($blogPosts as $post): ?>
+                                    <div class="applicant blog-post-row">
+                                        <?php if (!empty($post['cover_image'])): ?>
+                                            <img class="blog-post-thumb" src="<?= h(download_url((string) $post['cover_image'])) ?>" alt="">
+                                        <?php else: ?>
+                                            <span class="blog-post-thumb"></span>
+                                        <?php endif; ?>
                                         <div>
                                             <strong><?= h($post['title']) ?></strong><br>
                                             <span class="tiny muted"><?= h($post['category'] ?: 'Career Advice') ?> - <?= h($post['status']) ?> - <?= h(date('M j, Y', strtotime((string) $post['created_at']))) ?></span>
                                         </div>
-                                        <?php if (($post['status'] ?? '') === 'published'): ?>
-                                            <a class="btn outline" href="<?= h(app_url('blog', ['post' => $post['id']])) ?>">View</a>
-                                        <?php else: ?>
-                                            <span class="badge">Draft</span>
-                                        <?php endif; ?>
+                                        <div class="blog-post-actions">
+                                            <a class="btn outline" href="<?= h(app_url('admin', ['tab' => 'blog', 'edit_post' => $post['id']])) ?>">Edit</a>
+                                            <?php if (($post['status'] ?? '') === 'published'): ?><a class="btn outline" href="<?= h(app_url('blog', ['post' => $post['id']])) ?>">View</a><?php endif; ?>
+                                            <form method="post" data-confirm="Delete this blog post?">
+                                                <?= csrf_input() ?>
+                                                <input type="hidden" name="action" value="delete_blog_post">
+                                                <input type="hidden" name="blog_post_id" value="<?= h((string) $post['id']) ?>">
+                                                <button class="btn red">Delete</button>
+                                            </form>
+                                        </div>
                                     </div>
                                 <?php endforeach; ?>
                             </div>
@@ -6048,30 +7145,33 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                             <?php endforeach; ?>
                         </div>
                     <?php elseif ($tab === 'settings'): ?>
-                        <div class="auth-grid" style="align-items:start">
-                            <form class="form" method="post" enctype="multipart/form-data">
+                        <div class="settings-grid">
+                            <form class="form settings-card" method="post" enctype="multipart/form-data">
                                 <?= csrf_input() ?>
                                 <input type="hidden" name="action" value="update_profile">
+                                <h3><?= $isCompany ? 'Company Profile' : ($isUser ? 'Candidate Profile' : 'Profile Details') ?></h3>
+                                <p class="tiny muted" style="margin-top:-6px;line-height:1.6"><?= $isCompany ? 'These details help candidates trust your job posts.' : ($isUser ? 'These details help recruiters understand your fit and contact you faster.' : 'Keep your account details current.') ?></p>
                                 <label class="label">Profile Photo
                                     <input class="input" type="file" name="profile_photo" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp">
-                                    <span class="tiny muted">PNG, JPG, or WebP. Maximum size: 2 MB.</span>
+                                    <span class="tiny muted"><?= $isCompany ? 'Use a logo or clear company image. PNG, JPG, or WebP. Maximum size: 2 MB.' : 'Use a clear photo. PNG, JPG, or WebP. Maximum size: 2 MB.' ?></span>
                                 </label>
                                 <?php if ($isCompany): ?>
-                                    <label class="label">Company Name<input class="input" name="company_name" value="<?= h($user['company_name'] ?? '') ?>"></label>
-                                    <label class="label">Industry<input class="input" name="industry" value="<?= h($user['industry'] ?? '') ?>"></label>
-                                    <label class="label">Location<input class="input" name="location" value="<?= h($user['location'] ?? '') ?>"></label>
+                                    <label class="label">Company Name<input class="input" name="company_name" value="<?= h($user['company_name'] ?? '') ?>" placeholder="Your company name"></label>
+                                    <label class="label">Industry<input class="input" name="industry" value="<?= h($user['industry'] ?? '') ?>" placeholder="Software, finance, healthcare..."></label>
+                                    <label class="label">Location<input class="input" name="location" value="<?= h($user['location'] ?? '') ?>" placeholder="Erbil, Baghdad, Remote..."></label>
                                 <?php else: ?>
-                                    <label class="label">Full Name<input class="input" name="full_name" value="<?= h($user['full_name'] ?? '') ?>"></label>
+                                    <label class="label">Full Name<input class="input" name="full_name" value="<?= h($user['full_name'] ?? '') ?>" placeholder="Your full name"></label>
                                     <label class="label">Location<input class="input" name="location" value="<?= h($user['location'] ?? '') ?>" placeholder="Erbil, Baghdad, Remote..."></label>
                                     <div class="label">Skills
                                         <?= skills_checkboxes($chosenSkills) ?>
+                                        <span class="tiny muted">Choose the skills you want recruiters to match with open jobs.</span>
                                     </div>
                                     <label class="label">Upload CV
                                         <?= cv_upload_field('cv_file', false, 'PDF only. Maximum size: 2 MB.') ?>
                                         <span class="tiny muted">Current: <?= !empty($user['cv_file']) ? cv_link_html($user['cv_file'], uploaded_file_label($user['cv_file'])) : 'No CV uploaded' ?></span>
                                     </label>
                                 <?php endif; ?>
-                                <label class="label">Phone<input class="input" name="phone" value="<?= h($user['phone'] ?? '') ?>"></label>
+                                <label class="label">Phone<input class="input" name="phone" value="<?= h($user['phone'] ?? '') ?>" placeholder="+964 ..."></label>
                                 <?php if ($isUser): ?>
                                     <div class="profile-box">
                                         <strong>Profile Score: <?= h((string) $profileScore) ?>%</strong>
@@ -6081,15 +7181,16 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                                 <?php endif; ?>
                                 <button class="btn">Save Profile</button>
                             </form>
-                            <form class="form" method="post">
+                            <form class="form settings-card" method="post">
                                 <?= csrf_input() ?>
                                 <input type="hidden" name="action" value="update_password">
+                                <h3>Password</h3>
                                 <label class="label">New Password<input class="input" required type="password" name="password" placeholder="New password"></label>
                                 <button class="btn outline">Update Password</button>
                             </form>
                             <?php if (is_admin_role($user['role'] ?? null)): ?>
                                 <?php $currentAiMode = ai_matching_mode(); ?>
-                                <form class="form" method="post">
+                                <form class="form settings-card" method="post">
                                     <?= csrf_input() ?>
                                     <input type="hidden" name="action" value="update_ai_screening_settings">
                                     <input type="hidden" name="redirect_page" value="<?= h($page) ?>">
@@ -6126,15 +7227,18 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
 
 <footer class="footer">
     <div class="wrap">
+        <div class="footer-kdx-motion" aria-label="KDXJOBS">
+            <span class="footer-kdx-word" aria-hidden="true">
+                <span class="footer-kdx-letter">K</span><span class="footer-kdx-letter">D</span><span class="footer-kdx-letter">X</span><span class="footer-kdx-letter">J</span><span class="footer-kdx-letter">O</span><span class="footer-kdx-letter">B</span><span class="footer-kdx-letter">S</span>
+            </span>
+        </div>
         <div class="footer-top">
-            <div>
-                <div class="footer-brand">KDXJOBS</div>
-                <span class="tiny muted">Recruitment tools for candidates, companies, and admins.</span>
-            </div>
             <div class="footer-links">
                 <strong>Platform</strong>
+                <a href="<?= h(app_url('home')) ?>">Home</a>
                 <a href="<?= h(app_url('jobs')) ?>">Browse Jobs</a>
                 <a href="<?= h(app_url('companies')) ?>">Hiring Companies</a>
+                <a href="<?= h(app_url('blog')) ?>">Blog</a>
             </div>
             <div class="footer-links">
                 <strong>Accounts</strong>
@@ -6152,7 +7256,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
             </div>
         </div>
         <div class="footer-bottom">
-            <span class="tiny muted">&copy;2026 KDXJOBS Inc. All rights reserved.</span>
+            <span class="tiny muted">&copy;2026. Built for clear, modern recruitment.</span>
             <div class="social-row" aria-label="Social links">
                 <span class="language-pill">EN</span>
                 <span class="social-dot">in</span>
@@ -6166,6 +7270,6 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
 <link href="https://cdn.jsdelivr.net/npm/quill@1.3.7/dist/quill.snow.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/quill@1.3.7/dist/quill.min.js"></script>
 <script src="https://cdn.ckeditor.com/ckeditor5/41.4.2/classic/ckeditor.js"></script>
-<script src="<?= h(asset_url('assets/app.js?v=4')) ?>" defer></script>
+<script src="<?= h(asset_url('assets/app.js?v=9')) ?>" defer></script>
 </body>
 </html>
