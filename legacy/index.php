@@ -70,6 +70,11 @@ function h(?string $value): string
     return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
 }
 
+function tr(string $key, string $fallback): string
+{
+    return $fallback;
+}
+
 function csrf_token_value(): string
 {
     if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
@@ -270,8 +275,22 @@ function can_access_uploaded_file(PDO $pdo, string $path): bool
         return true;
     }
 
-    if (preg_match('/^uploads\/blog_editor_[a-z0-9.,_-]+\.(?:png|jpe?g|webp)$/i', $path)) {
-        return true;
+    if (preg_match('/^uploads\/blog_editor_[a-z0-9_-]+\.(?:png|jpe?g|webp)$/i', $path)) {
+        $likePath = addcslashes($path, "\\%_");
+        $encodedPath = addcslashes(rawurlencode($path), "\\%_");
+        $editorImageStmt = $pdo->prepare(
+            "SELECT id FROM blog_posts
+             WHERE status = 'published'
+               AND (content LIKE :path ESCAPE '\\\\' OR content LIKE :encoded_path ESCAPE '\\\\')
+             LIMIT 1"
+        );
+        $editorImageStmt->execute([
+            ':path' => '%' . $likePath . '%',
+            ':encoded_path' => '%' . $encodedPath . '%',
+        ]);
+        if ($editorImageStmt->fetchColumn()) {
+            return true;
+        }
     }
 
     if (!isset($_SESSION['user']['id'])) {
@@ -1038,8 +1057,9 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($action === 'login') {
             need(['email', 'password']);
+            $email = require_valid_email_address(field('email'));
             $stmt = $pdo->prepare('SELECT * FROM users WHERE email = :email AND status = "active" LIMIT 1');
-            $stmt->execute([':email' => field('email')]);
+            $stmt->execute([':email' => $email]);
             $user = $stmt->fetch();
             if (!$user || !password_verify(field('password'), $user['password_hash'])) {
                 throw new RuntimeException('Invalid email or password.');
@@ -1062,11 +1082,12 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($action === 'register') {
             need(['role', 'email', 'password']);
+            $email = require_valid_email_address(field('email'));
             validate_password_strength(field('password'));
             $role = field('role') === 'company' ? 'company' : 'jobseeker';
             $role === 'company' ? need(['company_name', 'industry', 'location']) : need(['full_name']);
             $emailExists = $pdo->prepare('SELECT id FROM users WHERE email = :email LIMIT 1');
-            $emailExists->execute([':email' => field('email')]);
+            $emailExists->execute([':email' => $email]);
             if ($emailExists->fetchColumn()) {
                 throw new RuntimeException('This email is already registered. Please login instead, or use a different email.');
             }
@@ -1088,7 +1109,7 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':role' => $role,
                 ':full_name' => field('full_name') ?: null,
                 ':company_name' => field('company_name') ?: null,
-                ':email' => field('email'),
+                ':email' => $email,
                 ':phone' => field('phone') ?: null,
                 ':password_hash' => password_hash(field('password'), PASSWORD_DEFAULT),
                 ':skills' => $selectedSkills ? implode(', ', $selectedSkills) : null,
@@ -1112,7 +1133,7 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':location' => field('location'),
                 ]);
             }
-            send_welcome_email(field('email'), $role === 'company' ? field('company_name') : field('full_name'), $role);
+            send_welcome_email($email, $role === 'company' ? field('company_name') : field('full_name'), $role);
             go('login', 'Account created. You can login now.');
         }
 
@@ -1123,7 +1144,7 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
             need(['job_id', 'applicant_name', 'applicant_email', 'role']);
             $jobId = (int) field('job_id');
             $userId = (int) ($_SESSION['user']['id'] ?? 0);
-            $applicantEmail = strtolower(trim(field('applicant_email')));
+            $applicantEmail = require_valid_email_address(field('applicant_email'), 'Please enter a valid applicant email.');
             $duplicateStmt = $pdo->prepare(
                 'SELECT id, status
                  FROM applications
@@ -1165,7 +1186,7 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':job_id' => $jobId,
                 ':user_id' => $userId,
                 ':applicant_name' => field('applicant_name'),
-                ':applicant_email' => field('applicant_email'),
+                ':applicant_email' => $applicantEmail,
                 ':applicant_phone' => field('applicant_phone') ?: null,
                 ':role' => field('role'),
                 ':cover_note' => field('cover_note') ?: null,
@@ -1384,9 +1405,7 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($action === 'contact_message') {
             need(['full_name', 'email', 'subject', 'message']);
-            if (!filter_var(field('email'), FILTER_VALIDATE_EMAIL)) {
-                throw new RuntimeException('Please enter a valid email address.');
-            }
+            $email = require_valid_email_address(field('email'));
 
             $stmt = $pdo->prepare(
                 'INSERT INTO contact_messages (full_name, email, subject, message)
@@ -1394,7 +1413,7 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
             );
             $stmt->execute([
                 ':full_name' => field('full_name'),
-                ':email' => field('email'),
+                ':email' => $email,
                 ':subject' => field('subject'),
                 ':message' => field('message'),
             ]);
@@ -1408,7 +1427,7 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 send_app_email(
                     $adminEmail,
                     'KDXJobs: new contact form message',
-                    "A new contact form message has been submitted.\n\nName: " . field('full_name') . "\nEmail: " . field('email') . "\nSubject: " . field('subject') . "\n\nMessage:\n" . field('message')
+                    "A new contact form message has been submitted.\n\nName: " . field('full_name') . "\nEmail: " . $email . "\nSubject: " . field('subject') . "\n\nMessage:\n" . field('message')
                 );
             }
 
@@ -1483,9 +1502,7 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!is_allowed_application_status($nextStatus)) {
                 throw new RuntimeException('Invalid application status.');
             }
-            if (!filter_var(field('applicant_email'), FILTER_VALIDATE_EMAIL)) {
-                throw new RuntimeException('Please enter a valid applicant email.');
-            }
+            $applicantEmail = require_valid_email_address(field('applicant_email'), 'Please enter a valid applicant email.');
 
             $sql = 'UPDATE applications a JOIN jobs j ON j.id = a.job_id
                     SET a.applicant_name = :applicant_name,
@@ -1497,7 +1514,7 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     WHERE a.id = :id';
             $params = [
                 ':applicant_name' => field('applicant_name'),
-                ':applicant_email' => field('applicant_email'),
+                ':applicant_email' => $applicantEmail,
                 ':applicant_phone' => field('applicant_phone') ?: null,
                 ':role' => field('role'),
                 ':cover_note' => field('cover_note') ?: null,
@@ -1834,7 +1851,13 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new RuntimeException('Only the super admin can create admins.');
             }
             need(['full_name', 'email', 'password']);
+            $email = require_valid_email_address(field('email'));
             validate_password_strength(field('password'));
+            $emailExists = $pdo->prepare('SELECT id FROM users WHERE email = :email LIMIT 1');
+            $emailExists->execute([':email' => $email]);
+            if ($emailExists->fetchColumn()) {
+                throw new RuntimeException('This email is already registered.');
+            }
             $stmt = $pdo->prepare(
                 'INSERT INTO users (role, full_name, email, phone, password_hash, status)
                  VALUES (:role, :full_name, :email, :phone, :password_hash, "active")'
@@ -1842,7 +1865,7 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt->execute([
                 ':role' => 'admin',
                 ':full_name' => field('full_name'),
-                ':email' => field('email'),
+                ':email' => $email,
                 ':phone' => field('phone') ?: null,
                 ':password_hash' => password_hash(field('password'), PASSWORD_DEFAULT),
             ]);
@@ -1998,6 +2021,9 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
             go($redirectPage, 'AI screening mode changed to ' . ai_matching_mode_label($mode) . '. Existing match scores will refresh with the new mode.', ['tab' => $redirectTab]);
         }
 
+    } catch (PDOException $exception) {
+        error_log('Legacy web database error: ' . $exception->getMessage());
+        $error = 'Database error. Please try again later.';
     } catch (Throwable $exception) {
         $error = $exception->getMessage();
     }
@@ -2363,7 +2389,8 @@ if ($page === 'application' && $user) {
 
 function app_url(string $page, array $extra = []): string
 {
-    return app_base_path() . '/index.php?' . http_build_query(array_merge(['page' => $page], $extra));
+    $query = array_merge(['page' => $page], $extra);
+    return app_base_path() . '/index.php?' . http_build_query($query);
 }
 
 function application_page_url(array $application, string $backPage = 'admin', string $backTab = 'applications'): string
@@ -3878,6 +3905,273 @@ function detect_experience_months_from_date_ranges(string $text): int
     return $months;
 }
 
+function detect_experience_ranges_with_context(string $text): array
+{
+    $monthPattern = '(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)';
+    $separator = '\s*(?:[^\w\s]{1,3}|to|until|till)\s*';
+    $currentMonth = ((int) date('Y') * 12) + (int) date('n');
+    $ranges = [];
+    $patterns = [
+        '/\b' . $monthPattern . '\s+((?:19|20)\d{2})' . $separator . '(?:(?:' . $monthPattern . ')\s+((?:19|20)\d{2})|(Present|Current|Now))\b/i',
+        '/\b((?:19|20)\d{2})' . $separator . '((?:19|20)\d{2}|Present|Current|Now)\b/i',
+        '/\b(\d{1,2})[\/. -]((?:19|20)\d{2})' . $separator . '(?:(\d{1,2})[\/. -]((?:19|20)\d{2})|(Present|Current|Now))\b/i',
+    ];
+
+    if (preg_match_all($patterns[0], $text, $matches, PREG_SET_ORDER | PREG_OFFSET_CAPTURE)) {
+        foreach ($matches as $match) {
+            $start = experience_date_to_month_index($match[1][0] ?? '', $match[2][0] ?? '');
+            $end = !empty($match[5][0])
+                ? $currentMonth
+                : experience_date_to_month_index($match[3][0] ?? '', $match[4][0] ?? '');
+            if ($start !== null && $end !== null && $end >= $start) {
+                $ranges[] = ['start' => $start, 'end' => $end, 'context' => experience_context_snippet($text, (int) ($match[0][1] ?? 0), strlen((string) ($match[0][0] ?? '')))];
+            }
+        }
+    }
+
+    if (preg_match_all($patterns[1], $text, $matches, PREG_SET_ORDER | PREG_OFFSET_CAPTURE)) {
+        foreach ($matches as $match) {
+            $start = experience_date_to_month_index('', $match[1][0] ?? '');
+            $end = preg_match('/present|current|now/i', (string) ($match[2][0] ?? ''))
+                ? $currentMonth
+                : experience_date_to_month_index('', $match[2][0] ?? '');
+            if ($start !== null && $end !== null && $end >= $start) {
+                $ranges[] = ['start' => $start, 'end' => $end, 'context' => experience_context_snippet($text, (int) ($match[0][1] ?? 0), strlen((string) ($match[0][0] ?? '')))];
+            }
+        }
+    }
+
+    if (preg_match_all($patterns[2], $text, $matches, PREG_SET_ORDER | PREG_OFFSET_CAPTURE)) {
+        foreach ($matches as $match) {
+            $startMonth = max(1, min(12, (int) ($match[1][0] ?? 1)));
+            $start = experience_date_to_month_index((string) $startMonth, $match[2][0] ?? '');
+            if (!empty($match[5][0])) {
+                $end = $currentMonth;
+            } else {
+                $endMonth = max(1, min(12, (int) ($match[3][0] ?? 1)));
+                $end = experience_date_to_month_index((string) $endMonth, $match[4][0] ?? '');
+            }
+            if ($start !== null && $end !== null && $end >= $start) {
+                $ranges[] = ['start' => $start, 'end' => $end, 'context' => experience_context_snippet($text, (int) ($match[0][1] ?? 0), strlen((string) ($match[0][0] ?? '')))];
+            }
+        }
+    }
+
+    return $ranges;
+}
+
+function experience_context_snippet(string $text, int $offset, int $length): string
+{
+    $start = max(0, $offset - 220);
+    return trim(preg_replace('/\s+/', ' ', substr($text, $start, $length + 520)) ?? '');
+}
+
+function experience_months_from_context_ranges(array $ranges): int
+{
+    if (!$ranges) {
+        return 0;
+    }
+
+    usort($ranges, static fn(array $a, array $b): int => ((int) ($a['start'] ?? 0)) <=> ((int) ($b['start'] ?? 0)));
+    $merged = [];
+    foreach ($ranges as $range) {
+        $start = (int) ($range['start'] ?? 0);
+        $end = (int) ($range['end'] ?? 0);
+        if ($start <= 0 || $end < $start) {
+            continue;
+        }
+        if (!$merged || $start > $merged[count($merged) - 1][1] + 1) {
+            $merged[] = [$start, $end];
+            continue;
+        }
+        $lastIndex = count($merged) - 1;
+        $merged[$lastIndex][1] = max($merged[$lastIndex][1], $end);
+    }
+
+    $months = 0;
+    foreach ($merged as $range) {
+        $months += max(0, $range[1] - $range[0] + 1);
+    }
+
+    return $months;
+}
+
+function experience_years_from_months(int $months): ?int
+{
+    return $months > 0 ? max(1, (int) floor($months / 12)) : null;
+}
+
+function job_experience_keywords(array $application, array $signals, array $template): array
+{
+    $keywords = $signals;
+    $keywords = array_merge($keywords, preg_split('/[^a-z0-9+#.]+/i', (string) ($application['job_title'] ?? ''), -1, PREG_SPLIT_NO_EMPTY) ?: []);
+    $keywords = array_merge($keywords, preg_split('/[^a-z0-9+#.]+/i', (string) ($application['role'] ?? ''), -1, PREG_SPLIT_NO_EMPTY) ?: []);
+    foreach (($template['criteria'] ?? []) as $criterion) {
+        $keywords = array_merge($keywords, normalize_text_list($criterion['keywords'] ?? []));
+    }
+
+    $stopWords = array_flip([
+        'a', 'an', 'and', 'or', 'the', 'with', 'for', 'job', 'role', 'work', 'year', 'years', 'experience',
+        'company', 'services', 'manager', 'officer', 'assistant', 'specialist', 'coordinator', 'executive',
+        'representative', 'supervisor', 'team', 'communication', 'problem solving', 'project management',
+        'operations', 'project', 'built', 'implemented',
+    ]);
+    $clean = [];
+    foreach ($keywords as $keyword) {
+        $keyword = strtolower(trim((string) $keyword));
+        $keyword = preg_replace('/\s+/', ' ', $keyword) ?? $keyword;
+        if ($keyword === '' || isset($stopWords[$keyword])) {
+            continue;
+        }
+        if (strlen($keyword) < 3 && !in_array($keyword, ['hr', 'it', 'ai'], true)) {
+            continue;
+        }
+        $clean[] = $keyword;
+    }
+
+    return array_values(array_unique($clean));
+}
+
+function text_has_experience_keyword(string $text, array $keywords): bool
+{
+    $text = strtolower($text);
+    foreach ($keywords as $keyword) {
+        $keyword = strtolower(trim((string) $keyword));
+        if ($keyword !== '' && preg_match('/\b' . preg_quote($keyword, '/') . '\b/i', $text)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function text_experience_keyword_count(string $text, array $keywords): int
+{
+    $text = strtolower($text);
+    $count = 0;
+    foreach ($keywords as $keyword) {
+        $keyword = strtolower(trim((string) $keyword));
+        if ($keyword !== '' && preg_match('/\b' . preg_quote($keyword, '/') . '\b/i', $text)) {
+            $count++;
+        }
+    }
+
+    return $count;
+}
+
+function job_experience_keyword_groups(array $template, array $keywords): array
+{
+    $name = strtolower((string) ($template['name'] ?? ''));
+    $strong = $keywords;
+    $adjacent = [];
+
+    if (str_contains($name, 'security')) {
+        $strong = array_merge($strong, [
+            'security', 'safety', 'hse', 'risk assessment', 'incident', 'emergency', 'surveillance',
+            'access control', 'cctv', 'patrol', 'guard', 'threat', 'investigation',
+        ]);
+        $adjacent = [
+            'risk', 'risks', 'compliance', 'regulatory', 'regulation', 'legal', 'control', 'controls',
+            'policy', 'policies', 'audit', 'mitigate', 'mitigated', 'management', 'manager', 'supervisor',
+            'leadership', 'led', 'directed', 'managed', 'team', 'staff', 'operations', 'procedure', 'report',
+        ];
+    } elseif (str_contains($name, 'accounting') || str_contains($name, 'finance')) {
+        $strong = array_merge($strong, [
+            'accounting', 'accountant', 'finance', 'financial', 'ledger', 'bookkeeping', 'reconciliation',
+            'invoice', 'tax', 'vat', 'payroll', 'budget', 'audit', 'accounts payable', 'accounts receivable',
+        ]);
+        $adjacent = [
+            'bank', 'banking', 'payment', 'payments', 'cash', 'cost', 'forecast', 'reporting', 'compliance',
+            'procurement', 'contract', 'vendor', 'monthly', 'quarterly', 'statement', 'control', 'excel',
+        ];
+    } elseif (str_contains($name, 'developer') || str_contains($name, 'software')) {
+        $strong = array_merge($strong, [
+            'developer', 'software', 'programming', 'php', 'laravel', 'javascript', 'react', 'python',
+            'java', 'node', 'api', 'database', 'sql', 'github', 'frontend', 'backend',
+        ]);
+        $adjacent = [
+            'built', 'developed', 'implemented', 'debug', 'tested', 'deployed', 'project', 'system',
+            'application', 'website', 'integration', 'automation', 'code', 'technical',
+        ];
+    } elseif (str_contains($name, 'data')) {
+        $strong = array_merge($strong, [
+            'data analyst', 'analytics', 'sql', 'power bi', 'tableau', 'dashboard', 'kpi', 'reporting',
+            'excel', 'visualization', 'database',
+        ]);
+        $adjacent = [
+            'analysis', 'metrics', 'insight', 'forecast', 'business', 'operations', 'cleaning', 'query',
+            'monthly', 'quarterly', 'management report',
+        ];
+    }
+
+    return [
+        'strong' => array_values(array_unique(normalize_text_list($strong))),
+        'adjacent' => array_values(array_unique(normalize_text_list($adjacent))),
+    ];
+}
+
+function context_is_relevant_experience(string $context, array $strongKeywords, array $adjacentKeywords): bool
+{
+    if (text_has_experience_keyword($context, $strongKeywords)) {
+        return true;
+    }
+
+    return text_experience_keyword_count($context, $adjacentKeywords) >= 2;
+}
+
+function detect_relevant_experience_months(string $text, array $keywords, array $adjacentKeywords = []): int
+{
+    if (trim($text) === '' || !$keywords) {
+        return 0;
+    }
+
+    $relevantRanges = array_values(array_filter(
+        detect_experience_ranges_with_context($text),
+        static fn(array $range): bool => context_is_relevant_experience((string) ($range['context'] ?? ''), $keywords, $adjacentKeywords)
+    ));
+    $bestMonths = experience_months_from_context_ranges($relevantRanges);
+
+    $patterns = [
+        '/(\d{1,2})\s*\+?\s*(?:years|year|yrs|yr)\s+(?:of\s+)?(?:relevant\s+)?(?:work\s+)?experience/i',
+        '/(\d{1,2})\s*\+?\s*(?:years|year|yrs|yr)/i',
+    ];
+    foreach ($patterns as $pattern) {
+        if (!preg_match_all($pattern, $text, $matches, PREG_SET_ORDER | PREG_OFFSET_CAPTURE)) {
+            continue;
+        }
+        foreach ($matches as $match) {
+            $context = experience_context_snippet($text, (int) ($match[0][1] ?? 0), strlen((string) ($match[0][0] ?? '')));
+            $value = (int) ($match[1][0] ?? 0);
+            if ($value > 0 && $value <= 60 && context_is_relevant_experience($context, $keywords, $adjacentKeywords)) {
+                $bestMonths = max($bestMonths, $value * 12);
+            }
+        }
+    }
+
+    return $bestMonths;
+}
+
+function detect_relevant_experience_years(string $text, array $keywords, array $adjacentKeywords = []): ?int
+{
+    $months = detect_relevant_experience_months($text, $keywords, $adjacentKeywords);
+    return experience_years_from_months($months);
+}
+
+function experience_year_label(?int $months, ?int $fallbackYears = null): string
+{
+    if ($months !== null && $months > 0) {
+        $years = round($months / 12, 1);
+        $label = rtrim(rtrim(number_format($years, 1, '.', ''), '0'), '.');
+        return $label . ' year' . ($label === '1' ? '' : 's');
+    }
+
+    if ($fallbackYears !== null) {
+        return $fallbackYears . ' year' . ($fallbackYears === 1 ? '' : 's');
+    }
+
+    return 'not clearly detected';
+}
+
 function detect_languages(string $text): array
 {
     $text = strtolower($text);
@@ -4284,7 +4578,7 @@ function cached_ai_job_match(array $application): ?array
     if (($stored['matching_mode'] ?? '') !== $currentMode) {
         return null;
     }
-    if ((int) ($stored['screening_template_version'] ?? 0) < 2) {
+    if ((int) ($stored['screening_template_version'] ?? 0) < 5) {
         return null;
     }
 
@@ -4365,7 +4659,12 @@ function openai_cv_job_match(array $application, array $candidateScreen, array $
         'tools' => $candidateScreen['tools'] ?? [],
         'roles' => $candidateScreen['roles'] ?? [],
         'industries' => $candidateScreen['industries'] ?? [],
-        'years' => $candidateScreen['years'] ?? null,
+        'role_relevant_years' => $candidateScreen['role_relevant_years'] ?? ($candidateScreen['years'] ?? null),
+        'role_relevant_months' => $candidateScreen['role_relevant_months'] ?? null,
+        'total_years_all_fields' => $candidateScreen['total_years'] ?? null,
+        'total_months_all_fields' => $candidateScreen['total_months'] ?? null,
+        'strong_experience_keywords_for_this_job' => $candidateScreen['experience_keywords'] ?? [],
+        'adjacent_experience_keywords_for_this_job' => $candidateScreen['adjacent_experience_keywords'] ?? [],
         'languages' => $candidateScreen['languages'] ?? [],
         'education' => $candidateScreen['education'] ?? [],
         'certifications' => $candidateScreen['certifications'] ?? [],
@@ -4376,7 +4675,7 @@ function openai_cv_job_match(array $application, array $candidateScreen, array $
     $model = openai_cv_model();
     $request = [
         'model' => $model,
-        'instructions' => 'You are a senior technical recruiter. Match the candidate CV to the job requirements using all evidence: skills, tools, responsibilities, seniority, industry context, education, languages, certifications, achievements, and missing signals. Apply the role-specific screening template as hard criteria when present. Score 0-100. Be evidence-based and do not invent facts. ' . $modeInstruction,
+        'instructions' => 'You are a senior technical recruiter. Match the candidate CV to the job requirements using all evidence: skills, tools, responsibilities, seniority, industry context, education, languages, certifications, achievements, and missing signals. Detect experience across all CV fields, including month ranges like Apr 2025-Present, Jan 2025-August 2025, and Oct 2018-Nov 2022. For required years, count months that are relevant to this specific job field and convert them accurately; do not ignore partial-year ranges. Avoid underfitting: count adjacent role-family experience when the same job period contains multiple related signals, for example compliance/risk/operations/leadership for Security Manager, banking/payment/reporting/compliance for Finance, shipped systems/projects/stack for Developer. Do not let clearly unrelated career years satisfy a role-specific experience requirement. Apply the role-specific screening template as hard criteria when present. Score 0-100. Be evidence-based and do not invent facts. ' . $modeInstruction,
         'input' => [[
             'role' => 'user',
             'content' => [[
@@ -4412,7 +4711,7 @@ function openai_cv_job_match(array $application, array $candidateScreen, array $
         'confidence' => trim((string) ($decoded['confidence'] ?? '')),
         'matching_mode' => $matchingMode,
         'screening_template' => $template['name'] ?? 'General role',
-        'screening_template_version' => 2,
+        'screening_template_version' => 5,
         'provider' => 'openai',
         'model' => $model,
     ];
@@ -4555,13 +4854,22 @@ function hard_requirement_breakdown(array $signals, array $matches, array $missi
     }
     if ($requiredYears !== null) {
         $status = 'Unknown';
-        $evidence = 'Candidate years of experience were not clearly detected.';
+        $totalYears = $candidateScreen['total_years'] ?? null;
+        $totalMonths = (int) ($candidateScreen['total_months'] ?? 0);
+        $relevantMonths = (int) ($candidateScreen['role_relevant_months'] ?? 0);
+        $evidence = 'Candidate role-specific years of experience were not clearly detected.';
+        if ($totalMonths > 0 || $totalYears !== null) {
+            $evidence .= ' CV shows about ' . experience_year_label($totalMonths, $totalYears !== null ? (int) $totalYears : null) . ' total across all fields.';
+        }
         if ($candidateYears !== null) {
-            $status = $candidateYears >= $requiredYears ? 'Met' : 'Partial';
-            $evidence = 'Job asks ' . $requiredYears . '+ years; CV shows about ' . $candidateYears . ' year' . ($candidateYears === 1 ? '' : 's') . '.';
+            $status = $relevantMonths >= ($requiredYears * 12) ? 'Met' : 'Partial';
+            $evidence = 'Job asks ' . $requiredYears . '+ relevant years; CV shows about ' . experience_year_label($relevantMonths, $candidateYears) . ' relevant experience.';
+            if (($totalMonths > 0 && $totalMonths !== $relevantMonths) || ($totalMonths === 0 && $totalYears !== null && (int) $totalYears !== $candidateYears)) {
+                $evidence .= ' Total detected across all fields: ' . experience_year_label($totalMonths, $totalYears !== null ? (int) $totalYears : null) . '.';
+            }
         }
         $items[] = [
-            'requirement' => $requiredYears . '+ years experience',
+            'requirement' => $requiredYears . '+ relevant years experience',
             'category' => 'Experience',
             'status' => $status,
             'evidence' => $evidence,
@@ -4601,6 +4909,114 @@ function hard_requirement_breakdown_html(array $items): string
             . '<em>' . h((string) ($item['evidence'] ?? 'No evidence available.')) . '</em>'
             . '</div>';
     }
+
+    return $html . '</div>';
+}
+
+function match_experience_explanation(array $match): string
+{
+    $requiredYears = $match['required_years'] ?? null;
+    $roleMonths = (int) ($match['candidate_role_relevant_months'] ?? 0);
+    $roleYears = $match['candidate_role_relevant_years'] ?? ($match['candidate_years'] ?? null);
+    $totalMonths = (int) ($match['candidate_total_months'] ?? 0);
+    $totalYears = $match['candidate_total_years'] ?? null;
+
+    if ($requiredYears === null) {
+        if ($roleMonths > 0 || $totalMonths > 0 || $totalYears !== null) {
+            return 'No explicit year requirement found. CV shows about ' . experience_year_label($totalMonths ?: $roleMonths, $totalYears !== null ? (int) $totalYears : ($roleYears !== null ? (int) $roleYears : null)) . ' detected experience.';
+        }
+
+        return 'No explicit year requirement found, and experience years were not clearly detected.';
+    }
+
+    if ($roleMonths > 0 || $roleYears !== null) {
+        $line = 'Job asks ' . (int) $requiredYears . '+ relevant years; CV shows about ' . experience_year_label($roleMonths, $roleYears !== null ? (int) $roleYears : null) . ' relevant experience.';
+        if ($totalMonths > 0 && $totalMonths !== $roleMonths) {
+            $line .= ' Total detected across all fields: ' . experience_year_label($totalMonths, $totalYears !== null ? (int) $totalYears : null) . '.';
+        }
+        return $line;
+    }
+
+    return 'Job asks ' . (int) $requiredYears . '+ relevant years, but role-specific experience was not clearly detected in the CV.';
+}
+
+function match_experience_short_label(array $match): string
+{
+    $requiredYears = $match['required_years'] ?? null;
+    $roleMonths = (int) ($match['candidate_role_relevant_months'] ?? 0);
+    $roleYears = $match['candidate_role_relevant_years'] ?? ($match['candidate_years'] ?? null);
+
+    $candidateLabel = ($roleMonths > 0 || $roleYears !== null)
+        ? experience_year_label($roleMonths, $roleYears !== null ? (int) $roleYears : null)
+        : 'unclear';
+
+    return $requiredYears !== null
+        ? 'Exp: ' . $candidateLabel . ' / asks ' . (int) $requiredYears . '+'
+        : 'Exp: ' . $candidateLabel;
+}
+
+function match_explanation_html(array $match): string
+{
+    $matches = normalize_text_list($match['matches'] ?? []);
+    $missing = normalize_text_list($match['missing'] ?? []);
+    $hardRequirements = array_values(array_filter($match['hard_requirements'] ?? [], 'is_array'));
+    $missingHard = array_values(array_filter($hardRequirements, static fn(array $item): bool => in_array((string) ($item['status'] ?? ''), ['Missing', 'Partial', 'Unknown'], true)));
+    $metHard = array_values(array_filter($hardRequirements, static fn(array $item): bool => (string) ($item['status'] ?? '') === 'Met'));
+    $score = (int) ($match['score'] ?? 0);
+    $mode = ai_matching_mode_label((string) ($match['matching_mode'] ?? ai_matching_mode()));
+    $cvQuality = is_array($match['cv_quality'] ?? null) ? $match['cv_quality'] : [];
+
+    $matchedList = $matches ?: array_map(static fn(array $item): string => (string) ($item['requirement'] ?? ''), array_slice($metHard, 0, 6));
+    $gapList = $missing ?: array_map(static fn(array $item): string => (string) ($item['requirement'] ?? ''), array_slice($missingHard, 0, 6));
+    $reasonList = array_values(array_filter(array_map('trim', $match['reasons'] ?? [])));
+
+    $html = '<div class="match-explain-grid">';
+    $html .= '<div class="match-explain-card good"><strong>Matched Evidence</strong>';
+    if ($matchedList) {
+        $html .= '<ul>';
+        foreach (array_slice($matchedList, 0, 6) as $item) {
+            $html .= '<li>' . h((string) $item) . '</li>';
+        }
+        $html .= '</ul>';
+    } else {
+        $html .= '<p>No direct requirement matches were detected yet.</p>';
+    }
+    $html .= '</div>';
+
+    $html .= '<div class="match-explain-card risk"><strong>Gaps To Check</strong>';
+    if ($gapList || $missingHard) {
+        $html .= '<ul>';
+        foreach (array_slice($gapList, 0, 5) as $item) {
+            $html .= '<li>' . h((string) $item) . '</li>';
+        }
+        foreach (array_slice($missingHard, 0, max(0, 5 - count($gapList))) as $item) {
+            $label = trim((string) ($item['requirement'] ?? 'Requirement'));
+            $status = trim((string) ($item['status'] ?? ''));
+            if ($label !== '') {
+                $html .= '<li>' . h($label . ($status !== '' ? ' - ' . $status : '')) . '</li>';
+            }
+        }
+        $html .= '</ul>';
+    } else {
+        $html .= '<p>No major gaps were detected by the current screening.</p>';
+    }
+    $html .= '</div>';
+
+    $html .= '<div class="match-explain-card"><strong>Experience Fit</strong><p>' . h(match_experience_explanation($match)) . '</p></div>';
+
+    $html .= '<div class="match-explain-card"><strong>Why ' . h((string) $score) . '%?</strong>';
+    $html .= '<p>' . h($mode . ' mode weighs direct matches, role-specific experience, CV quality, and missing must-have requirements.') . '</p>';
+    if ($cvQuality) {
+        $html .= '<p>CV quality: ' . h((string) ($cvQuality['score'] ?? 0)) . '% - ' . h((string) ($cvQuality['label'] ?? 'Review')) . '.</p>';
+    }
+    if ($reasonList) {
+        $html .= '<ul>';
+        foreach (array_slice($reasonList, 0, 3) as $reason) {
+            $html .= '<li>' . h($reason) . '</li>';
+        }
+        $html .= '</ul>';
+    }
+    $html .= '</div>';
 
     return $html . '</div>';
 }
@@ -4670,7 +5086,18 @@ function candidate_match_score(array $application): array
     $jobLanguages = detect_languages($jobText);
     $jobEducation = detect_education_levels($jobText);
     $requiredYears = job_required_years($application);
-    $candidateYears = $candidateScreen['years'] ?? null;
+    $candidateCorpus = trim(implode("\n", array_filter([
+        $candidateText,
+        (string) ($application['cv_ai_summary'] ?? ''),
+        (string) ($application['candidate_cv_ai_summary'] ?? ''),
+    ])));
+    $totalCandidateMonths = max(
+        detect_experience_months_from_date_ranges($candidateCorpus),
+        detect_experience_months_from_date_ranges((string) ($application['cv_text'] ?? '')),
+        detect_experience_months_from_date_ranges((string) ($application['candidate_cv_text'] ?? ''))
+    );
+    $experienceKeywords = job_experience_keywords($application, $signals, $screeningTemplate);
+    $totalCandidateYears = $candidateScreen['years'] ?? null;
     foreach ([
         $application['cv_ai_years'] ?? null,
         $application['candidate_cv_ai_years'] ?? null,
@@ -4680,9 +5107,19 @@ function candidate_match_score(array $application): array
         detect_experience_years((string) ($application['candidate_cv_ai_summary'] ?? '')),
     ] as $years) {
         if ($years !== null && (int) $years > 0) {
-            $candidateYears = max((int) ($candidateYears ?? 0), (int) $years);
+            $totalCandidateYears = max((int) ($totalCandidateYears ?? 0), (int) $years);
         }
     }
+    $experienceKeywordGroups = job_experience_keyword_groups($screeningTemplate, $experienceKeywords);
+    $roleRelevantMonths = detect_relevant_experience_months($candidateCorpus, $experienceKeywordGroups['strong'], $experienceKeywordGroups['adjacent']);
+    $roleRelevantYears = experience_years_from_months($roleRelevantMonths);
+    $candidateYears = $roleRelevantYears;
+    $candidateScreen['total_years'] = $totalCandidateYears;
+    $candidateScreen['total_months'] = $totalCandidateMonths;
+    $candidateScreen['role_relevant_years'] = $roleRelevantYears;
+    $candidateScreen['role_relevant_months'] = $roleRelevantMonths;
+    $candidateScreen['experience_keywords'] = $experienceKeywordGroups['strong'];
+    $candidateScreen['adjacent_experience_keywords'] = $experienceKeywordGroups['adjacent'];
     $candidateScreen['years'] = $candidateYears;
 
     $candidateLookup = array_flip(array_map('strtolower', $candidateSkills));
@@ -4728,15 +5165,20 @@ function candidate_match_score(array $application): array
         }
     }
     if ($requiredYears !== null) {
+        $requiredMonths = $requiredYears * 12;
+        $candidateMeetsYears = $roleRelevantMonths >= $requiredMonths;
         if ($candidateYears === null) {
             $score = min($score, 70);
-            $reasons[] = 'Experience check: job asks ' . $requiredYears . '+ years, but the CV did not show a clear number of years.';
-        } elseif ($candidateYears < $requiredYears) {
-            $gap = $requiredYears - $candidateYears;
+            $overallLine = ($totalCandidateMonths > 0 || $totalCandidateYears !== null) ? ' CV shows about ' . experience_year_label($totalCandidateMonths, $totalCandidateYears) . ' total, but not clearly in this job field.' : '';
+            $reasons[] = 'Experience check: job asks ' . $requiredYears . '+ relevant years, but the CV did not show clear role-specific years.' . $overallLine;
+        } elseif (!$candidateMeetsYears) {
+            $gap = max(1, (int) ceil(($requiredMonths - $roleRelevantMonths) / 12));
             $score = min($score, max(0, $skillScore - min(45, 20 + ($gap * 10))));
-            $reasons[] = 'Experience gap: job asks ' . $requiredYears . '+ years, CV shows about ' . $candidateYears . ' year' . ($candidateYears === 1 ? '' : 's') . '. Not a strong match.';
+            $totalLine = ($totalCandidateMonths > 0 && $totalCandidateMonths !== $roleRelevantMonths) ? ' (' . experience_year_label($totalCandidateMonths, $totalCandidateYears) . ' total detected)' : '';
+            $reasons[] = 'Experience gap: job asks ' . $requiredYears . '+ relevant years, CV shows about ' . experience_year_label($roleRelevantMonths, $candidateYears) . ' relevant experience' . $totalLine . '. Not a strong match.';
         } else {
-            $reasons[] = 'Experience check passed: job asks ' . $requiredYears . '+ years, CV shows about ' . $candidateYears . '+ years.';
+            $totalLine = ($totalCandidateMonths > 0 && $totalCandidateMonths !== $roleRelevantMonths) ? ' (' . experience_year_label($totalCandidateMonths, $totalCandidateYears) . ' total detected)' : '';
+            $reasons[] = 'Experience check passed: job asks ' . $requiredYears . '+ relevant years, CV shows about ' . experience_year_label($roleRelevantMonths, $candidateYears) . ' relevant experience' . $totalLine . '.';
         }
     }
     $summary = trim((string) (($application['cv_ai_summary'] ?? '') ?: ($application['candidate_cv_ai_summary'] ?? '')));
@@ -4815,6 +5257,10 @@ function candidate_match_score(array $application): array
         'total' => count($signals),
         'required_years' => $requiredYears,
         'candidate_years' => $candidateYears,
+        'candidate_total_years' => $totalCandidateYears,
+        'candidate_role_relevant_years' => $roleRelevantYears,
+        'candidate_total_months' => $totalCandidateMonths,
+        'candidate_role_relevant_months' => $roleRelevantMonths,
         'matching_mode' => $matchingMode,
         'reasons' => $reasons,
     ];
@@ -4867,6 +5313,9 @@ function candidate_match_html(array $application, bool $inlineDetails = true, st
     $matches = $match['matches'] ? implode(', ', array_slice($match['matches'], 0, 6)) : 'No matched requirements yet';
     $reasons = implode(' ', array_slice($match['reasons'] ?? [], 0, 3));
     $recruiterSummary = trim((string) ($match['recruiter_summary'] ?? ''));
+    $matchCount = count($match['matches'] ?? []);
+    $missingCount = count($match['missing'] ?? []);
+    $experienceLine = $inlineDetails ? match_experience_explanation($match) : match_experience_short_label($match);
     $cvQuality = is_array($match['cv_quality'] ?? null) ? $match['cv_quality'] : null;
     $cvQualityHtml = $cvQuality
         ? '<span class="tiny muted cv-quality-line"><strong>CV Quality: ' . h((string) ($cvQuality['score'] ?? 0)) . '% - ' . h((string) ($cvQuality['label'] ?? 'Review')) . '</strong></span>'
@@ -4912,9 +5361,9 @@ function candidate_match_html(array $application, bool $inlineDetails = true, st
     $hasDetails = $reasons !== '' || $insightParts || $breakdownHtml !== '';
     $detailsHtml = '';
     if ($hasDetails && $inlineDetails) {
-        $detailsHtml = '<details class="match-details"><summary>Why?</summary><p>' . h($reasons) . '</p>' . $breakdownHtml . implode('', $insightParts) . '</details>';
+        $detailsHtml = '<details class="match-details"><summary>Why this score?</summary>' . match_explanation_html($match) . $breakdownHtml . implode('', $insightParts) . '</details>';
     } elseif ($hasDetails) {
-        $detailsHtml = '<a class="match-details-link" href="' . h(application_page_url($application, $backPage, $backTab) . '#ai-screening') . '">Why?</a>';
+        $detailsHtml = '<a class="match-details-link" href="' . h(application_page_url($application, $backPage, $backTab) . '#ai-screening') . '">Why score?</a>';
     }
     return '<div class="match-score ' . h($class) . '">'
         . '<span class="tiny muted">AI CV Match</span>'
@@ -4922,6 +5371,7 @@ function candidate_match_html(array $application, bool $inlineDetails = true, st
         . '<span class="tiny muted">' . h($fitLabel) . ' · ' . h(ai_matching_mode_label((string) ($match['matching_mode'] ?? ai_matching_mode()))) . ' mode</span>'
         . '<div class="score-bar"><span style="width:' . h((string) $score) . '%"></span></div>'
         . ($recruiterSummary !== '' ? '<p class="recruiter-summary">' . h($recruiterSummary) . '</p>' : '')
+        . '<div class="match-mini-summary"><span>' . h((string) $matchCount) . ' matched</span><span>' . h((string) $missingCount) . ' gaps</span><span>' . h($experienceLine) . '</span></div>'
         . '<span class="tiny muted">' . h($matches) . '</span>'
         . $cvQualityHtml
         . $detailsHtml
@@ -5184,6 +5634,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
     </div>
     <?php
 }
+
 ?>
 <!doctype html>
 <html lang="en">
@@ -5193,323 +5644,20 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
     <title>KDXJobs</title>
     <link rel="icon" type="image/svg+xml" href="<?= h(asset_url('assets/favicon.svg?v=3')) ?>">
     <link rel="shortcut icon" type="image/svg+xml" href="<?= h(asset_url('assets/favicon.svg?v=3')) ?>">
-    <style>
-        *{box-sizing:border-box}body{margin:0;font-family:Inter,Arial,sans-serif;background:linear-gradient(#f0f9ff,#fff 42%,#fff);color:#0f172a}button,input,select,textarea{font:inherit}a{text-decoration:none;color:inherit}.wrap{max-width:1280px;margin:0 auto;padding-left:24px;padding-right:24px}.header{position:sticky;top:0;z-index:50;border-bottom:1px solid #e0f2fe;background:rgba(255,255,255,.86);backdrop-filter:blur(18px)}.nav{display:flex;align-items:center;justify-content:space-between;padding:16px 0;gap:18px}.brand{display:flex;align-items:center;gap:12px;border:0;background:transparent;cursor:pointer}.brand-icon{display:flex;width:44px;height:44px;align-items:center;justify-content:center;border-radius:16px;background:#0ea5e9;color:white;box-shadow:0 10px 22px #bae6fd}.brand-title{font-size:20px;font-weight:900;letter-spacing:-.02em}.brand-sub{font-size:12px;font-weight:700;color:#0284c7}.nav-links{display:flex;align-items:center;gap:4px}.nav-link{border:0;border-radius:16px;padding:9px 15px;background:transparent;color:#475569;font-size:14px;font-weight:800;cursor:pointer}.nav-link.active,.nav-link:hover{background:#f0f9ff;color:#0369a1}.nav-actions{display:flex;align-items:center;gap:12px}.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:0;border-radius:16px;padding:12px 20px;background:#0ea5e9;color:#fff;font-weight:900;cursor:pointer;transition:.2s}.btn:hover{background:#0284c7}.btn.dark{background:#0f172a}.btn.dark:hover{background:#1e293b}.btn.outline{border:1px solid #bae6fd;background:#fff;color:#0369a1}.btn.outline:hover{background:#f0f9ff}.btn.green{background:#10b981}.btn.red{border:1px solid #fee2e2;background:#fff;color:#dc2626}.card{border:1px solid #e0f2fe;border-radius:24px;background:#fff;box-shadow:0 1px 3px rgba(15,23,42,.06)}.hero{position:relative;overflow:hidden;padding:80px 0 56px}.orb{position:absolute;left:50%;top:0;z-index:-1;width:384px;height:384px;transform:translateX(-50%);border-radius:999px;background:rgba(186,230,253,.45);filter:blur(55px)}.hero-grid{display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:center}.pill{display:inline-flex;align-items:center;gap:8px;margin-bottom:20px;border:1px solid #e0f2fe;border-radius:999px;background:#fff;padding:9px 16px;color:#0369a1;font-size:14px;font-weight:900;box-shadow:0 1px 8px rgba(14,165,233,.08)}h1{margin:0;font-size:clamp(40px,5vw,64px);line-height:1.06;font-weight:950;letter-spacing:-.035em}h2{margin:0;font-size:clamp(30px,4vw,40px);line-height:1.15;font-weight:950;letter-spacing:-.025em}h3{margin:0;font-size:20px;font-weight:950}.lead{margin-top:24px;max-width:580px;color:#475569;font-size:18px;line-height:1.75}.search{margin-top:32px;display:flex;gap:12px;border:1px solid #e0f2fe;border-radius:24px;background:#fff;padding:12px;box-shadow:0 18px 40px rgba(14,165,233,.12)}.search-inner{display:flex;flex:1;align-items:center;gap:12px;padding:0 12px}.search input{width:100%;border:0;outline:0;color:#334155}.hero-actions{margin-top:24px;display:flex;flex-wrap:wrap;gap:12px}.hero-panel{border-radius:32px;background:rgba(255,255,255,.82);padding:12px;box-shadow:0 24px 70px rgba(2,132,199,.18)}.panel-inner{border-radius:24px;background:linear-gradient(135deg,#f0f9ff,#fff);padding:24px}.grid{display:grid;gap:24px}.grid3{grid-template-columns:repeat(3,minmax(0,1fr))}.grid4{grid-template-columns:repeat(4,minmax(0,1fr))}.stat{display:flex;align-items:center;gap:16px;padding:20px}.icon{display:inline-flex;align-items:center;justify-content:center;width:48px;height:48px;border-radius:16px;background:#f0f9ff;color:#0284c7;font-size:20px}.icon.small{width:32px;height:32px;font-size:14px}.muted{color:#64748b}.tiny{font-size:14px}.stat-value{font-size:28px;font-weight:950}.applicant{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px;border-radius:16px;background:#f8fafc;padding:12px}.badge{display:inline-flex;border-radius:999px;background:#e0f2fe;padding:5px 12px;color:#0369a1;font-size:12px;font-weight:900}.section{padding:64px 0}.section-title{max-width:760px;margin:0 auto 40px;text-align:center}.eyebrow{margin:0 0 8px;color:#0ea5e9;font-size:13px;font-weight:950;text-transform:uppercase;letter-spacing:.25em}.section-title p:last-child{color:#475569}.job-card{height:100%;transition:.2s}.job-card:hover{transform:translateY(-4px);box-shadow:0 18px 44px rgba(2,132,199,.14)}.card-pad{padding:24px}.job-top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:20px}.job-meta{margin-top:16px;display:grid;gap:8px;color:#64748b;font-size:14px}.tags{margin-top:20px;display:flex;flex-wrap:wrap;gap:8px}.tag{border-radius:999px;background:#f1f5f9;padding:5px 12px;color:#475569;font-size:12px;font-weight:800}.auth-grid{display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:center}.form{display:grid;gap:16px}.label{display:grid;gap:8px;color:#334155;font-size:14px;font-weight:900}.input,.select,.textarea{width:100%;border:1px solid #e0f2fe;border-radius:16px;background:#fff;padding:13px 16px;color:#334155;outline:none}.input:focus,.select:focus,.textarea:focus{border-color:#7dd3fc;box-shadow:0 0 0 4px #e0f2fe}.role-tabs{margin-bottom:24px;display:grid;grid-template-columns:1fr 1fr;gap:12px;border-radius:20px;background:#f0f9ff;padding:8px}.role-tabs button{border:0;border-radius:14px;background:transparent;padding:12px;font-weight:950;color:#64748b}.role-tabs button.active{background:#fff;color:#0369a1;box-shadow:0 2px 8px rgba(15,23,42,.08)}.upload{border:1px dashed #bae6fd;border-radius:18px;background:rgba(240,249,255,.7);padding:20px;text-align:center}.dash-hero{margin-bottom:32px;border-radius:32px;background:linear-gradient(90deg,#0ea5e9,#3b82f6);padding:32px;color:white;box-shadow:0 18px 45px rgba(14,165,233,.22)}.dash-hero p{color:#eff6ff}.dash-layout{display:grid;grid-template-columns:1fr 3fr;gap:24px}.side{padding:20px}.side-user{display:flex;gap:12px;align-items:center;margin-bottom:24px}.side-btn{display:flex;width:100%;align-items:center;gap:12px;margin-bottom:8px;border:0;border-radius:16px;background:#fff;padding:12px 16px;color:#475569;text-align:left;font-weight:800}.side-btn.active,.side-btn:hover{background:#f0f9ff;color:#0369a1}.profile-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.profile-box{border-radius:16px;background:rgba(240,249,255,.72);padding:16px}.detail-grid{display:grid;grid-template-columns:1fr 2fr;gap:32px}.info-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.info{border-radius:16px;background:#f0f9ff;padding:16px}.alert{max-width:1180px;margin:24px auto 0;border-radius:16px;padding:14px 18px;font-weight:800}.ok{border:1px solid #bbf7d0;background:#f0fdf4;color:#15803d}.bad{border:1px solid #fecaca;background:#fef2f2;color:#b91c1c}.footer{margin-top:64px;border-top:1px solid #e0f2fe;background:#fff;padding:40px 0}.footer-row{display:flex;justify-content:space-between;gap:16px;align-items:center}.mobile-menu{display:none}.hidden{display:none}@media(max-width:1024px){.nav-links,.nav-actions{display:none}.mobile-menu{display:block}.hero-grid,.auth-grid,.dash-layout,.detail-grid{grid-template-columns:1fr}.grid3,.grid4,.info-grid,.profile-grid{grid-template-columns:1fr}.search{flex-direction:column}.footer-row{flex-direction:column;align-items:flex-start}}
-        .application-card{display:block;border:1px solid #e0f2fe;background:#fff;padding:18px}.application-row{display:grid;grid-template-columns:1fr auto;align-items:start;gap:18px}.application-title{display:grid;gap:6px}.application-title strong{font-size:18px}.application-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:10px}.application-actions form{display:flex;flex-wrap:wrap;gap:10px}.application-actions .btn{min-width:108px}.application-toolbar{display:grid;grid-template-columns:minmax(0,1fr) 220px auto auto auto;gap:12px;align-items:center;margin-bottom:18px;padding:12px;border:1px solid #e0f2fe;border-radius:20px;background:#f8fbff}.application-toolbar .search-inner{border:1px solid #e0f2fe;border-radius:16px;background:#fff;min-height:50px}.toolbar-meta{justify-self:end;color:#64748b;font-size:14px;font-weight:800}.pagination-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:18px}.pagination-meta{color:#64748b;font-size:14px;font-weight:800}.btn.is-disabled{pointer-events:none;opacity:.45}.status-pill{display:inline-flex;width:max-content;border-radius:999px;padding:5px 12px;font-size:12px;font-weight:950}.status-pill.new{background:#e0f2fe;color:#0369a1}.status-pill.reviewed{background:#eef2ff;color:#4338ca}.status-pill.shortlisted{background:#fef3c7;color:#92400e}.status-pill.accepted{background:#dcfce7;color:#166534}.status-pill.rejected{background:#fee2e2;color:#991b1b}.progress-track{display:grid;grid-template-columns:repeat(5,minmax(110px,1fr));gap:8px;margin-top:16px;overflow-x:auto;padding-bottom:2px}.progress-step{position:relative;border-radius:999px;background:#e2e8f0;color:#64748b;padding:8px 10px;text-align:center;font-size:12px;font-weight:900;white-space:nowrap}.progress-step i{display:inline-block;width:8px;height:8px;margin-right:6px;border-radius:999px;background:#94a3b8}.progress-step.done,.progress-step.current{background:#dbeafe;color:#1d4ed8}.progress-step.done i,.progress-step.current i{background:#2563eb}.progress-step.current{box-shadow:0 0 0 3px #eff6ff inset}.status-note{margin:10px 0 0;font-size:13px;font-weight:900}.status-note.reviewed{color:#4338ca}.status-note.shortlisted{color:#92400e}.status-note.accepted{color:#166534}.status-note.rejected{color:#991b1b}.application-panels{display:grid;gap:10px;margin-top:16px}.app-panel{border:1px solid #e0f2fe;border-radius:16px;background:#fff;overflow:hidden}.app-panel summary{display:flex;align-items:center;justify-content:space-between;gap:12px;list-style:none;cursor:pointer;padding:14px 16px;font-weight:950;color:#334155}.app-panel summary::-webkit-details-marker{display:none}.app-panel summary:after{content:"+";display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:999px;background:#f0f9ff;color:#0369a1}.app-panel[open] summary{border-bottom:1px solid #e0f2fe;background:#f8fafc}.app-panel[open] summary:after{content:"-"}.app-panel-body{padding:16px}.interview-form,.application-edit-form{display:grid;grid-template-columns:1fr 1fr;gap:14px}.interview-form .label:nth-of-type(3),.application-edit-form .edit-cover{grid-column:1/-1}.interview-form .btn,.application-edit-form .btn{grid-column:1/-1}.notification-card{padding:18px}.notification-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}.notification-item{border:1px solid #e0f2fe;border-radius:16px;background:#fff;padding:14px}.notification-item p{line-height:1.45}.dash-layout{grid-template-columns:260px minmax(0,1fr);align-items:start}.dash-layout>main{min-width:0}.side{position:sticky;top:108px;align-self:start;max-height:calc(100vh - 132px);overflow:auto;padding:22px;border-radius:24px}.side-user{display:grid;grid-template-columns:54px minmax(0,1fr);gap:12px;margin-bottom:22px;padding:12px;border-radius:20px;background:linear-gradient(135deg,#f8fbff,#fff)}.side-user strong{display:block;line-height:1.15;word-break:break-word}.side-user .icon{width:54px;height:54px}.side-btn{display:grid;grid-template-columns:22px minmax(0,1fr);align-items:center;min-height:58px;margin-bottom:8px;padding:12px 18px;border:1px solid transparent;line-height:1.18;white-space:normal;word-break:normal;overflow-wrap:break-word}.side-btn.active{border-color:#dbeafe;box-shadow:0 10px 24px rgba(14,165,233,.08)}@media(max-width:1180px){.dash-layout{grid-template-columns:240px minmax(0,1fr)}}@media(max-width:800px){.application-row{grid-template-columns:1fr}.application-actions,.application-actions form{justify-content:stretch;width:100%}.application-actions .btn{width:100%;min-width:0}.application-toolbar{grid-template-columns:1fr}.toolbar-meta{justify-self:start}.pagination-bar{align-items:stretch;flex-direction:column}.pagination-bar .btn{width:100%}.progress-track{grid-template-columns:repeat(5,130px)}.interview-form,.application-edit-form{grid-template-columns:1fr}.side{position:static;max-height:none;overflow:visible}}
-        .dash-layout{grid-template-columns:1fr 3fr;align-items:initial}.dash-layout>main{min-width:0}.side{position:static;max-height:none;overflow:visible;padding:20px}.side-user{display:flex;gap:12px;align-items:center;margin-bottom:24px;padding:0;background:transparent}.side-user .icon{width:48px;height:48px}.side-btn{display:flex;align-items:center;min-height:auto;margin-bottom:8px;padding:12px 16px;border:0;line-height:1.25;white-space:normal;overflow-wrap:anywhere}.side-btn.active{box-shadow:none}
-        .application-toolbar .search-inner span{display:inline-flex;align-items:center;justify-content:center;width:18px;font-size:0;line-height:1}
-        .application-toolbar .search-inner span::before{content:"\1F50D";font-size:16px;line-height:1;color:#64748b}
-        .application-toolbar .search-inner input{min-width:0;border:0;outline:none;box-shadow:none;background:transparent}
-        .profile-photo{display:inline-flex;align-items:center;justify-content:center;width:54px;height:54px;flex:0 0 auto;border:3px solid #e0f2fe;border-radius:999px;background:#f0f9ff;color:#0369a1;object-fit:cover;font-size:18px;font-weight:950;box-shadow:0 10px 24px rgba(14,165,233,.12)}.profile-photo-fallback{background:linear-gradient(135deg,#e0f2fe,#fff)}.profile-photo-large{width:92px;height:92px;font-size:32px;border-width:4px}.profile-header{display:flex;align-items:center;gap:18px;margin-bottom:22px;border:1px solid #e0f2fe;border-radius:22px;background:linear-gradient(135deg,#f8fbff,#fff);padding:18px}.profile-header p{margin:6px 0 0}.side-photo{width:54px;height:54px}.friendly-profile{display:grid;gap:18px}.profile-hero-card{display:grid;grid-template-columns:auto minmax(0,1fr) minmax(180px,.28fr);gap:18px;align-items:center;border:1px solid #dbeafe;border-radius:22px;background:linear-gradient(135deg,#f8fbff,#eef7ff);padding:20px}.profile-hero-copy h3{margin:4px 0 6px;font-size:28px}.profile-hero-copy p{margin:0;color:#475569;line-height:1.55}.profile-quick-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}.profile-score-card{border:1px solid #dbeafe;border-radius:18px;background:#fff;padding:16px}.profile-score-card strong{display:block;font-size:30px}.profile-score-card span{display:block;margin:4px 0 10px;color:#64748b;font-size:13px;font-weight:900}.profile-friendly-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.profile-section-card{border:1px solid #e0f2fe;border-radius:20px;background:#fff;padding:18px;box-shadow:0 8px 20px rgba(14,165,233,.05)}.profile-detail-list{display:grid;gap:10px}.profile-detail-list div{border:1px solid #e0f2fe;border-radius:14px;background:#f8fbff;padding:12px}.profile-detail-list span{display:block;margin-bottom:4px;color:#0369a1;font-size:12px;font-weight:950}.profile-detail-list strong{display:block;word-break:break-word}.check-list.compact span{padding:9px 11px}.skill-chip-list{display:flex;flex-wrap:wrap;gap:8px}.skill-chip-list span{display:inline-flex;border:1px solid #bae6fd;border-radius:999px;background:#f0f9ff;padding:8px 12px;color:#0369a1;font-size:13px;font-weight:950}.cv-card{border:1px solid #e0f2fe;border-radius:16px;background:#f8fbff;padding:14px}.cv-card+.cv-card{margin-top:10px}.cv-card p{line-height:1.55}.cv-card.soft{background:#fff}.profile-activity-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.profile-activity-grid a{border:1px solid #e0f2fe;border-radius:16px;background:#f8fbff;padding:14px;transition:.2s}.profile-activity-grid a:hover{border-color:#7dd3fc;background:#f0f9ff}.profile-activity-grid strong{display:block;font-size:24px}.profile-activity-grid span{display:block;margin-top:4px;color:#64748b;font-size:13px;font-weight:900}@media(max-width:900px){.profile-hero-card,.profile-friendly-grid{grid-template-columns:1fr}.profile-score-card{max-width:280px}.profile-activity-grid{grid-template-columns:1fr}}
-        .skill-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.skill-option{display:flex;align-items:center;gap:8px;border:1px solid #e0f2fe;border-radius:14px;background:#f8fafc;padding:10px 12px;font-weight:900;color:#334155}.skill-option input{width:auto}.score-bar{height:10px;border-radius:999px;background:#e2e8f0;overflow:hidden;margin-top:10px}.score-bar span{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#0ea5e9,#22c55e)}.file-link{color:#0369a1;font-weight:950}@media(max-width:800px){.skill-grid,.skills-dropdown-menu{grid-template-columns:1fr}}
-        .skills-dropdown{position:relative}.skills-dropdown summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:52px;border:1px solid #e0f2fe;border-radius:16px;background:#fff;padding:13px 16px;color:#334155;cursor:pointer;list-style:none}.skills-dropdown summary::-webkit-details-marker{display:none}.skills-dropdown summary:after{content:"";width:8px;height:8px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(45deg);transition:.2s}.skills-dropdown[open] summary{border-color:#7dd3fc;box-shadow:0 0 0 4px #e0f2fe}.skills-dropdown[open] summary:after{transform:rotate(225deg)}.skills-dropdown-menu{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:10px;border:1px solid #e0f2fe;border-radius:16px;background:#fff;padding:12px;box-shadow:0 16px 36px rgba(15,23,42,.08)}
-        .cv-upload{display:grid;grid-template-columns:auto 1fr;gap:14px;align-items:center;border:1px dashed #7dd3fc;border-radius:18px;background:linear-gradient(135deg,#f0f9ff,#fff);padding:16px 18px;transition:.2s}.cv-upload:hover{border-color:#0ea5e9;background:#e0f2fe;box-shadow:0 12px 26px rgba(14,165,233,.12)}.cv-upload-icon{display:inline-flex;align-items:center;justify-content:center;width:54px;height:54px;border-radius:16px;background:#0ea5e9;color:#fff;box-shadow:0 12px 22px rgba(14,165,233,.2)}.cv-upload-icon svg{width:30px;height:30px;fill:none;stroke:currentColor;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.cv-upload-copy{display:grid;gap:7px;min-width:0}.cv-upload-copy strong{font-size:16px;color:#0f172a}.cv-upload-copy span{color:#64748b;font-size:13px;font-weight:800}.cv-upload-input{width:100%;max-width:360px;border:1px solid #bae6fd;border-radius:12px;background:#fff;padding:10px;color:#334155;cursor:pointer}.cv-upload-file{display:inline-flex;width:max-content;max-width:100%;border-radius:999px;background:#e0f2fe;padding:5px 10px;color:#0369a1!important;font-size:12px!important;font-weight:950!important}
-        .match-score{display:grid;gap:6px;min-width:150px}.match-score strong{font-size:20px}.match-score.high strong{color:#15803d}.match-score.medium strong{color:#b45309}.match-score.low strong{color:#b91c1c}.match-score .score-bar{margin-top:0}.match-score .cv-quality-line{display:block;font-size:10px;line-height:1.2;font-weight:950;white-space:nowrap}.match-score .cv-quality-line strong{font-size:10px;font-weight:950}.match-score.high .score-bar span{background:linear-gradient(90deg,#22c55e,#16a34a)}.match-score.medium .score-bar span{background:linear-gradient(90deg,#f59e0b,#d97706)}.match-score.low .score-bar span{background:linear-gradient(90deg,#ef4444,#dc2626)}.recruiter-summary{margin:0;color:#334155;font-size:11px;line-height:1.45;font-weight:800}.match-details{margin-top:2px}.match-details summary,.match-details-link{width:max-content;cursor:pointer;color:#0369a1;font-size:12px;font-weight:950}.match-details-link{text-decoration:none}.match-details-link:hover{text-decoration:underline}.match-details p{max-width:360px;margin:6px 0 0;color:#475569;font-size:12px;line-height:1.55}
-        .table-wrap{overflow:auto;border:1px solid #e0f2fe;border-radius:18px;background:#fff}.data-table{width:100%;border-collapse:separate;border-spacing:0;background:#fff;font-size:12px;line-height:1.35}.data-table th,.data-table td{padding:10px 12px;border-bottom:1px solid #eaf6ff;text-align:left;vertical-align:top}.data-table th{position:sticky;top:0;z-index:1;background:#f0f9ff;color:#334155;font-size:11px;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}.data-table tbody tr:hover td{background:#f8fbff}.data-table td .tiny{font-size:10px}.data-table tr:last-child td{border-bottom:0}.data-table a{color:#0f172a;text-decoration:none}.data-table a:hover{color:#0369a1}.table-primary{font-size:12px;font-weight:900;color:#0f172a;line-height:1.35}.table-secondary{margin-top:4px;color:#64748b;font-size:10px;font-weight:700;line-height:1.4}.table-tertiary{margin-top:3px;color:#94a3b8;font-size:10px;font-weight:700;line-height:1.35}.applicant-cell,.job-cell{min-width:190px}.match-cell{min-width:190px}.cv-cell{min-width:90px;white-space:nowrap}.status-cell{min-width:100px}.actions-cell{min-width:170px}.table-open-btn{display:inline-flex;margin-bottom:8px}.table-actions{display:flex;flex-direction:column;align-items:flex-start;gap:6px}.table-actions .select{min-width:130px;padding:8px 10px;border-radius:10px;font-size:12px}.table-actions .btn{padding:8px 10px;font-size:12px}.compact-progress{min-width:150px}
-        .friendly-app-table .candidate-stack{display:grid;grid-template-columns:42px 1fr;gap:12px;align-items:start}.friendly-app-table .candidate-avatar{display:flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:14px;background:linear-gradient(135deg,#0ea5e9,#3b82f6);color:#fff;font-size:14px;font-weight:950;box-shadow:0 12px 24px rgba(14,165,233,.18)}.friendly-app-table .table-fit-wrap .match-score{min-width:135px}.friendly-app-table .table-fit-wrap .match-details p{max-width:240px}.friendly-app-table .table-status-wrap{display:grid;gap:8px}.friendly-app-table .table-score-note{color:#64748b;font-size:11px;font-weight:700;line-height:1.4}.friendly-app-table .table-inline-actions{display:grid;gap:10px}.friendly-app-table .table-mini-form{display:grid;gap:8px}.friendly-app-table .table-mini-form .select{min-width:150px;padding:9px 10px;border-radius:12px;font-size:12px}.friendly-app-table .table-mini-form .btn{padding:9px 12px;font-size:12px}.friendly-app-table tbody tr:hover td{background:linear-gradient(180deg,#f8fbff,#ffffff)}
-        .manage-overview{display:grid;gap:18px;margin-bottom:24px}.manage-copy{display:grid;gap:8px;padding:22px}.manage-copy p{margin:0;color:#64748b;line-height:1.7}.manage-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.manage-summary .profile-box{background:linear-gradient(135deg,#f8fbff,#fff)}.manage-summary strong{display:block;font-size:24px;line-height:1;color:#0f172a}.manage-summary span{display:block;margin-top:8px;color:#64748b;font-size:13px;font-weight:800}.manage-edit-stack{display:grid;gap:14px;margin-top:18px}.manage-edit-stack .app-panel summary{background:#f8fbff}
-        .jobs-explorer{display:grid;grid-template-columns:330px 1fr;gap:32px;align-items:start}.filter-panel{position:sticky;top:96px;padding:20px;background:#fff}.filter-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px}.filter-head h3{font-size:22px;line-height:1.2;font-weight:900;color:#0f172a}.filter-count{border-radius:999px;background:#e0f2fe;color:#0369a1;padding:5px 10px;font-size:12px;font-weight:900}.filter-block{overflow:hidden;border:1px solid #e0f2fe;border-radius:14px;background:#f8fafc;margin-bottom:10px}.filter-block summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:56px;padding:0 18px;color:#334155;font-size:16px;font-weight:800;cursor:pointer;list-style:none}.filter-block summary::-webkit-details-marker{display:none}.filter-block summary::after{content:"";width:8px;height:8px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(45deg);transition:.2s}.filter-block[open] summary::after{transform:rotate(225deg)}.filter-body{padding:10px 18px 18px}.filter-range{display:grid;grid-template-columns:1fr 1fr;gap:10px}.check-list{display:grid;gap:0;max-height:320px;overflow:auto}.check-item{position:relative;display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:46px;padding:0 26px 0 8px;color:#475569;font-size:15px;font-weight:500;cursor:pointer}.check-item input{position:absolute;opacity:0;pointer-events:none}.check-item input:checked + span::after{content:"\2713";position:absolute;right:0;top:50%;transform:translateY(-50%);font-size:18px;font-weight:900;color:#0369a1}.jobs-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.jobs-toolbar .search{margin:0;flex:1;box-shadow:none}.sort-row{display:flex;align-items:center;gap:10px}.jobs-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.empty-state{padding:36px;text-align:center}.filter-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}.job-detail-layout{display:grid;grid-template-columns:minmax(260px,360px) 1fr;gap:28px;align-items:start}.job-detail-main{padding:32px}.job-detail-title{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:24px}.job-rich-text{color:#475569;line-height:1.8}.job-rich-text p{margin:0 0 14px}.job-rich-text ul,.job-rich-text ol{margin:0 0 16px 22px;padding:0}.job-rich-text blockquote{margin:16px 0;border-left:4px solid #bae6fd;padding-left:16px;color:#334155}.job-rich-text h3,.job-rich-text h4{margin:20px 0 10px;color:#0f172a}.editor-wrap{overflow:hidden;border:1px solid #e0f2fe;border-radius:16px;background:#fff}.editor-toolbar{display:flex;flex-wrap:wrap;gap:6px;border-bottom:1px solid #e0f2fe;background:#f8fafc;padding:8px}.editor-toolbar button{display:inline-flex;align-items:center;justify-content:center;min-width:34px;height:34px;border:1px solid transparent;border-radius:10px;background:#fff;color:#334155;font-weight:950;cursor:pointer}.editor-toolbar button:hover{border-color:#bae6fd;background:#f0f9ff;color:#0369a1}.rich-editor{min-height:190px;padding:14px 16px;color:#334155;line-height:1.65;outline:none}.rich-editor:focus{box-shadow:0 0 0 4px #e0f2fe inset}.rich-editor:empty:before{content:attr(data-placeholder);color:#94a3b8}.rich-editor ul,.rich-editor ol{margin:8px 0 8px 22px;padding:0}.rich-editor-source{position:absolute;left:-9999px;width:1px;height:1px;opacity:0}.quill-editor-wrap{padding:0}.quill-editor-wrap .ql-toolbar.ql-snow{border:0;border-bottom:1px solid #e0f2fe;background:#f8fafc}.quill-editor-wrap .ql-container.ql-snow{border:0;font-family:inherit}.quill-editor-wrap .ql-editor{min-height:260px;color:#334155;line-height:1.75}.quill-editor-wrap .ql-editor.ql-blank::before{color:#94a3b8;font-style:normal}.quill-editor-wrap .ql-editor h2,.quill-editor-wrap .ql-editor h3{color:#0f172a}.quill-editor-wrap .ql-editor blockquote{border-left:4px solid #bae6fd;color:#334155}.quill-editor-wrap.is-invalid{box-shadow:0 0 0 4px #fee2e2 inset}@media(max-width:1024px){.jobs-explorer,.job-detail-layout{grid-template-columns:1fr}.filter-panel{position:static}.jobs-toolbar{align-items:stretch;flex-direction:column}.jobs-grid{grid-template-columns:1fr}.job-detail-title{flex-direction:column}.job-detail-main{padding:24px}}
-        .ck-editor-host{display:grid;gap:0}
-        .ck-editor__editable_inline{min-height:190px;color:#334155}
-        .ck.ck-editor__main>.ck-editor__editable:not(.ck-focused){border-color:#e0f2fe}
-        .ck.ck-editor__editable.ck-focused:not(.ck-editor__nested-editable){border-color:#7dd3fc;box-shadow:0 0 0 4px #e0f2fe}
-        .ck.ck-toolbar{border-color:#e0f2fe;background:#f8fafc}
-        .ck.ck-toolbar .ck-button.ck-on{background:#e0f2fe;color:#0369a1}
-        .brand{gap:14px}.brand-icon{width:58px;height:58px;border:1px solid #dbeafe;background:#fff;box-shadow:0 12px 28px rgba(8,23,255,.10);font-size:0;overflow:hidden}.brand-icon img{display:block;width:48px;height:48px;object-fit:contain}.brand-logo{display:block;width:48px;height:48px}
-        .timeline-list{display:grid;gap:10px;border-left:3px solid #bae6fd;padding-left:14px}.timeline-item{position:relative;display:grid;gap:4px;border-radius:14px;background:#f8fafc;padding:12px}.timeline-item:before{content:"";position:absolute;left:-22px;top:18px;width:12px;height:12px;border-radius:999px;background:#0ea5e9;box-shadow:0 0 0 4px #e0f2fe}.timeline-item.interview{background:#f0fdf4}.timeline-item.interview:before{background:#22c55e}.analytics-bar{height:10px;border-radius:999px;background:#e0f2fe;overflow:hidden;margin-top:8px}.analytics-bar span{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#0ea5e9,#2563eb)}
-        .service-chat{margin-top:16px;border:1px solid #e0f2fe;border-radius:18px;background:#fff;padding:14px}.service-chat-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.service-chat-body{display:grid;gap:10px;max-height:260px;overflow:auto;padding-right:4px}.chat-bubble{max-width:82%;border-radius:16px;padding:12px}.chat-bubble p{margin:6px 0;line-height:1.55}.chat-bubble.candidate{justify-self:start;background:#f0f9ff}.chat-bubble.support{justify-self:end;background:#ecfdf5}.service-chat-form{display:grid;grid-template-columns:1fr auto;gap:10px;margin-top:12px;align-items:end}
-        .theme-toggle{width:44px;height:44px;padding:0;border-radius:999px;font-size:18px;line-height:1}
-        .nav-menu-toggle{display:none;width:44px;height:44px;padding:0;border-radius:999px;font-size:22px;line-height:1}.nav-mobile-actions{display:none}
-        .theme-mobile{display:none}
-        .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
-        .hero-pipeline-row{margin-top:34px}.recruit-animation{position:relative;overflow:hidden;border:1px solid #dbeafe;border-radius:22px;background:linear-gradient(135deg,#fff,#eff6ff);padding:24px}.recruit-animation-head{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:22px}.recruit-animation-head strong{font-size:18px}.recruit-animation-head span{border-radius:999px;background:#dcfce7;color:#166534;padding:6px 10px;font-size:12px;font-weight:950}.pipeline-track{position:relative;height:150px}.pipeline-line{position:absolute;left:34px;right:34px;top:58px;height:4px;border-radius:999px;background:#bae6fd}.pipeline-stage{position:absolute;top:20px;display:grid;gap:8px;justify-items:center;z-index:2}.pipeline-stage:nth-child(2){left:0}.pipeline-stage:nth-child(3){left:25%;transform:translateX(-50%)}.pipeline-stage:nth-child(4){left:50%;transform:translateX(-50%)}.pipeline-stage:nth-child(5){left:75%;transform:translateX(-50%)}.pipeline-stage:nth-child(6){right:0}.pipeline-node{display:flex;align-items:center;justify-content:center;width:72px;height:72px;border:3px solid #e0f2fe;border-radius:22px;background:#fff;color:#0369a1;font-size:28px;box-shadow:0 14px 30px rgba(14,165,233,.13)}.pipeline-stage small{color:#475569;font-weight:900}.candidate-dot{position:absolute;top:48px;left:32px;z-index:3;width:24px;height:24px;border:4px solid #fff;border-radius:999px;background:#0ea5e9;box-shadow:0 10px 22px rgba(14,165,233,.35);animation:candidateMove 5s ease-in-out infinite}.candidate-dot.two{animation-delay:1.55s;background:#22c55e}.candidate-dot.three{animation-delay:3.1s;background:#f59e0b}.offer-card{position:absolute;right:22px;bottom:0;display:flex;align-items:center;gap:10px;border:1px solid #bbf7d0;border-radius:16px;background:#f0fdf4;padding:10px 12px;color:#166534;font-size:13px;font-weight:950;animation:offerPulse 2.5s ease-in-out infinite}.offer-card i{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:999px;background:#22c55e;color:#fff;font-style:normal}@keyframes candidateMove{0%{left:32px;transform:scale(.8);opacity:0}12%{opacity:1}26%{left:25%;transform:scale(1)}46%{left:50%;transform:scale(1)}66%{left:75%;transform:scale(1)}86%{left:calc(100% - 56px);transform:scale(.92);opacity:1}100%{left:calc(100% - 56px);transform:scale(.7);opacity:0}}@keyframes offerPulse{0%,100%{transform:translateY(0);box-shadow:none}50%{transform:translateY(-4px);box-shadow:0 12px 22px rgba(34,197,94,.18)}}
-        .career-potential{padding-top:34px}.idea-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px}.idea-card{min-height:420px;border-radius:32px;padding:34px;display:flex;flex-direction:column;justify-content:space-between;overflow:hidden}.idea-card h3{font-size:24px}.idea-card p{margin:14px 0 0;color:#1f2937;line-height:1.7}.idea-card.yellow{background:#fef0a8}.idea-card.pink{background:#f8ced2}.idea-card.violet{background:#a9a1ff}.idea-art{height:220px;display:flex;align-items:center;justify-content:center}.idea-art svg{width:190px;height:190px;stroke:#020617;stroke-width:8;fill:none;stroke-linecap:round;stroke-linejoin:round}.idea-art .fill{fill:#020617;stroke:none}.journey-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px}.journey-card{min-height:184px;border-radius:8px;background:#f3f4f6;padding:28px}.journey-icon{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:999px;background:#0ea5e9;color:#fff;font-weight:950;margin-bottom:26px}.journey-card h3{font-size:16px}.journey-card p{font-size:13px;line-height:1.7;color:#374151}.innovation-band{border-top:1px solid #e0f2fe;border-bottom:1px solid #e0f2fe;background:#f8fafc}.innovation-grid{display:grid;grid-template-columns:1.1fr repeat(3,1fr);gap:18px;align-items:stretch}.innovation-lead{padding:8px 0}.innovation-lead h2{font-size:34px}.innovation-card{border:1px solid #e0f2fe;border-radius:18px;background:#fff;padding:22px}.innovation-card .tiny{display:inline-flex;margin-bottom:14px;border-radius:999px;background:#e0f2fe;padding:5px 10px;color:#0369a1;font-weight:950}.footer-brand{font-size:clamp(56px,9vw,118px);line-height:.9;font-weight:950;letter-spacing:-.07em;color:#0ea5e9}.footer-top{display:grid;grid-template-columns:1.2fr repeat(3,1fr);gap:38px;align-items:start}.footer-links{display:grid;gap:10px;color:#64748b;font-size:14px}.footer-bottom{margin-top:44px;border:1px solid #cbd5e1;border-radius:12px;padding:14px 18px;display:flex;justify-content:space-between;align-items:center;gap:18px}.social-row{display:flex;align-items:center;gap:10px}.social-dot{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:999px;background:#082f49;color:#fff;font-size:12px;font-weight:950}.language-pill{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;background:#082f49;color:#fff;padding:7px 12px;font-size:12px;font-weight:950}
-        .career-potential{padding-top:18px}.idea-grid{grid-template-columns:1.15fr .85fr .85fr;align-items:stretch}.idea-card{min-height:360px;border:1px solid #dbeafe;border-radius:22px;background:#fff!important;box-shadow:0 18px 42px rgba(14,165,233,.08)}.idea-card:first-child{background:linear-gradient(135deg,#e0f2fe,#fff)!important}.idea-card:nth-child(2){background:linear-gradient(135deg,#f0fdf4,#fff)!important}.idea-card:nth-child(3){background:linear-gradient(135deg,#fff7ed,#fff)!important}.idea-art{height:150px;justify-content:flex-start}.idea-art svg{width:126px;height:126px;stroke:#0284c7;stroke-width:7}.journey-grid{grid-template-columns:repeat(4,minmax(0,1fr));counter-reset:journey}.journey-card{position:relative;border:1px solid #e0f2fe;border-radius:18px;background:#fff;padding:26px;box-shadow:0 1px 3px rgba(15,23,42,.05)}.journey-icon{width:34px;height:34px;margin-bottom:18px;background:#0f172a}.journey-card:after{content:"";position:absolute;left:26px;right:26px;bottom:0;height:4px;border-radius:999px 999px 0 0;background:#0ea5e9}.about-story{display:grid;grid-template-columns:1.1fr .9fr;gap:30px;align-items:start}.about-panel{border:1px solid #dbeafe;border-radius:28px;background:linear-gradient(135deg,#ffffff,#f4faff);padding:32px;box-shadow:0 20px 44px rgba(14,165,233,.10)}.about-panel p{color:#475569;line-height:1.85}.about-chip-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:20px}.about-chip{display:inline-flex;align-items:center;border:1px solid #dbeafe;border-radius:999px;background:#fff;padding:8px 14px;color:#0369a1;font-size:13px;font-weight:900}.about-metric-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.about-metric{border:1px solid #dbeafe;border-radius:22px;background:#fff;padding:20px;box-shadow:0 10px 24px rgba(15,23,42,.05)}.about-metric strong{display:block;font-size:28px;line-height:1;color:#0f172a}.about-metric span{display:block;margin-top:8px;color:#64748b;font-weight:800}.about-values{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-top:24px}.about-value{border:1px solid #e0f2fe;border-radius:20px;background:#fff;padding:22px;box-shadow:0 1px 3px rgba(15,23,42,.05)}.about-value h3{margin-bottom:10px}.about-value p{margin:0;color:#475569;line-height:1.75}.tracking-story{overflow:hidden;border:1px solid #dbeafe;border-radius:28px;background:linear-gradient(135deg,#f8fdff,#eef7ff 55%,#fff);padding:32px;box-shadow:0 24px 54px rgba(14,165,233,.10)}.tracking-story-grid{display:grid;grid-template-columns:1.1fr .9fr;gap:28px;align-items:center}.tracking-story-copy p{color:#475569;line-height:1.8}.tracking-badges{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0 0}.tracking-badge{display:inline-flex;align-items:center;gap:8px;border:1px solid #dbeafe;border-radius:999px;background:#fff;padding:9px 14px;color:#0369a1;font-size:13px;font-weight:900}.tracking-visual{position:relative;min-height:360px;border-radius:24px;background:linear-gradient(180deg,#ffffff,#eff6ff);padding:24px;border:1px solid #dbeafe;overflow:hidden}.tracking-glow{position:absolute;right:-20px;top:-20px;width:180px;height:180px;border-radius:999px;background:rgba(14,165,233,.14);filter:blur(18px)}.tracking-line{position:absolute;left:42px;top:50px;bottom:44px;width:4px;border-radius:999px;background:linear-gradient(180deg,#7dd3fc,#bfdbfe)}.tracking-step{position:relative;z-index:1;display:grid;grid-template-columns:64px 1fr;gap:14px;align-items:center;margin-bottom:18px}.tracking-node{display:flex;align-items:center;justify-content:center;width:64px;height:64px;border-radius:20px;background:#fff;border:1px solid #dbeafe;box-shadow:0 14px 28px rgba(14,165,233,.10);font-size:24px}.tracking-card{border:1px solid #dbeafe;border-radius:18px;background:rgba(255,255,255,.95);padding:14px 16px;box-shadow:0 10px 24px rgba(15,23,42,.05)}.tracking-card strong{display:block;font-size:15px}.tracking-card span{display:block;margin-top:4px;color:#64748b;font-size:13px;line-height:1.55}.tracking-card.support{background:linear-gradient(135deg,#f0fdf4,#ffffff)}.tracking-card.care{background:linear-gradient(135deg,#fff7ed,#ffffff)}.tracking-pulse{position:absolute;left:34px;top:44px;width:18px;height:18px;border-radius:999px;background:#0ea5e9;box-shadow:0 0 0 0 rgba(14,165,233,.45);animation:trackingPulse 2.6s ease-in-out infinite}.tracking-ribbon{display:inline-flex;align-items:center;gap:8px;margin-bottom:18px;border-radius:999px;background:#0f172a;color:#fff;padding:8px 14px;font-size:12px;font-weight:900;letter-spacing:.08em;text-transform:uppercase}.innovation-band{background:linear-gradient(135deg,#f8fafc,#eff6ff)}.innovation-card{border-radius:8px}.footer{margin-top:56px;border-top:1px solid #dbeafe;background:#fff;padding:0 0 24px;overflow:hidden}.footer-kdx-motion{position:relative;margin:0 calc(50% - 50vw) 24px;padding:22px 24px 16px;border-bottom:1px solid #dbeafe;background:linear-gradient(90deg,#f8fbff,#eef7ff,#fff);text-align:center}.footer-kdx-word{display:inline-block;font-size:clamp(48px,11vw,150px);line-height:.85;font-weight:950;letter-spacing:.02em;text-transform:uppercase;color:transparent;-webkit-text-stroke:1px rgba(14,165,233,.5);background:linear-gradient(110deg,#0f172a 0%,#0ea5e9 40%,#22c55e 58%,#0369a1 100%);background-size:220% 100%;-webkit-background-clip:text;background-clip:text;filter:drop-shadow(0 18px 30px rgba(14,165,233,.16));animation:footerKdxShine 4.2s ease-in-out infinite}.footer-kdx-letter{display:inline-block;animation:footerKdxLetter 2.8s ease-in-out infinite}.footer-kdx-letter:nth-child(2){animation-delay:.12s}.footer-kdx-letter:nth-child(3){animation-delay:.24s}.footer-kdx-letter:nth-child(4){animation-delay:.36s}.footer-kdx-letter:nth-child(5){animation-delay:.48s}.footer-kdx-letter:nth-child(6){animation-delay:.6s}.footer-kdx-letter:nth-child(7){animation-delay:.72s}.footer-panel{border:1px solid #dbeafe;border-radius:26px;background:linear-gradient(135deg,#f8fbff,#eef7ff);padding:28px;margin-bottom:26px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:22px;align-items:center;box-shadow:0 20px 46px rgba(14,165,233,.10)}.footer-panel .eyebrow{margin:0 0 8px}.footer-panel h3{font-size:26px;margin:0}.footer-panel p{max-width:620px;margin:10px 0 0;color:#475569;line-height:1.7}.footer-cta{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end}.footer-top{display:grid;grid-template-columns:repeat(3,minmax(150px,1fr));gap:30px;align-items:start;border-top:0;padding-top:0}.footer-links{display:grid;gap:10px;color:#64748b;font-size:14px}.footer-links strong{margin-bottom:4px;color:#0f172a;font-size:13px;letter-spacing:.08em;text-transform:uppercase}.footer-links a{width:max-content;max-width:100%;transition:.2s}.footer-links a:hover{color:#0284c7;transform:translateX(3px)}.footer-bottom{margin-top:26px;border-top:1px solid #dbeafe;padding-top:18px;display:flex;justify-content:space-between;align-items:center;gap:18px}.social-row{display:flex;align-items:center;gap:10px}.social-dot,.language-pill{display:inline-flex;align-items:center;justify-content:center;height:30px;border:1px solid #dbeafe;border-radius:999px;background:#f0f9ff;color:#0369a1;font-size:12px;font-weight:950}.social-dot{width:30px}.language-pill{padding:0 12px}@keyframes trackingPulse{0%,100%{transform:scale(.92);box-shadow:0 0 0 0 rgba(14,165,233,.42)}50%{transform:scale(1.06);box-shadow:0 0 0 14px rgba(14,165,233,0)}}@keyframes footerKdxLetter{0%,100%{transform:translateY(0) rotate(0deg)}35%{transform:translateY(-7px) rotate(-1.5deg)}70%{transform:translateY(2px) rotate(1deg)}}@keyframes footerKdxShine{0%,100%{background-position:0 50%}50%{background-position:100% 50%}}@media(prefers-reduced-motion:reduce){.footer-kdx-word,.footer-kdx-letter{animation:none}}
-        body.theme-dark{background:linear-gradient(#08111f,#0f172a 42%,#111827);color:#e5e7eb}
-        body.theme-dark .header{border-color:#1e3a5f;background:rgba(15,23,42,.88)}
-        body.theme-dark .brand-sub,body.theme-dark .nav-link.active,body.theme-dark .nav-link:hover,body.theme-dark .file-link{color:#7dd3fc}
-        body.theme-dark .nav-link,body.theme-dark .muted,body.theme-dark .job-meta,body.theme-dark .job-rich-text{color:#cbd5e1}
-        body.theme-dark .card,body.theme-dark .search,body.theme-dark .hero-panel,body.theme-dark .footer,body.theme-dark .input,body.theme-dark .select,body.theme-dark .textarea,body.theme-dark .data-table,body.theme-dark .editor-wrap{border-color:#1e3a5f;background:#111827;color:#e5e7eb}
-        body.theme-dark .btn.outline,body.theme-dark .side-btn,body.theme-dark .pill,body.theme-dark .editor-toolbar button{border-color:#1e3a5f;background:#0f172a;color:#bae6fd}
-        body.theme-dark .btn.outline:hover,body.theme-dark .nav-link.active,body.theme-dark .nav-link:hover,body.theme-dark .side-btn.active,body.theme-dark .side-btn:hover{background:#10233d}
-        body.theme-dark .panel-inner,body.theme-dark .profile-box,body.theme-dark .info,body.theme-dark .filter-block,body.theme-dark .filter-panel,body.theme-dark .applicant,body.theme-dark .tag,body.theme-dark .role-tabs,body.theme-dark .upload,body.theme-dark .editor-toolbar,body.theme-dark .table-wrap{border-color:#1e3a5f;background:#0f172a;color:#e5e7eb}
-        body.theme-dark .skills-dropdown summary,body.theme-dark .skills-dropdown-menu,body.theme-dark .skill-option{border-color:#1e3a5f;background:#111827;color:#e5e7eb}
-        body.theme-dark .cv-upload{border-color:#1e3a5f;background:linear-gradient(135deg,#0f172a,#111827)}body.theme-dark .cv-upload:hover{border-color:#38bdf8;background:#10233d}body.theme-dark .cv-upload-copy strong{color:#e5e7eb}body.theme-dark .cv-upload-copy span{color:#cbd5e1}
-        body.theme-dark .lead,body.theme-dark .section-title p:last-child,body.theme-dark .label,body.theme-dark .filter-head h3,body.theme-dark .filter-block summary,body.theme-dark .job-rich-text h3,body.theme-dark .job-rich-text h4,body.theme-dark .data-table th,body.theme-dark .data-table td,body.theme-dark .search input{color:#e5e7eb}
-        body.theme-dark .search input,body.theme-dark .role-tabs button{background:transparent;color:#e5e7eb}
-        body.theme-dark .role-tabs button.active,body.theme-dark .data-table th{background:#10233d;color:#bae6fd}
-        body.theme-dark .data-table td{border-color:#1e293b}
-        body.theme-dark .brand-icon{border-color:#1e3a5f;background:#fff;color:#0817ff;box-shadow:0 10px 22px rgba(14,165,233,.22)}
-        body.theme-dark .ck.ck-toolbar,body.theme-dark .ck.ck-editor__main>.ck-editor__editable{border-color:#1e3a5f;background:#111827;color:#e5e7eb}
-        body.theme-dark .ck.ck-button,body.theme-dark .ck.ck-button:not(.ck-disabled):hover{color:#e5e7eb;background:#0f172a}
-        body.theme-dark .journey-card,body.theme-dark .innovation-band,body.theme-dark .innovation-card{border-color:#1e3a5f;background:#111827;color:#e5e7eb}
-        body.theme-dark .recruit-animation,body.theme-dark .pipeline-node{border-color:#1e3a5f;background:#111827;color:#bae6fd}body.theme-dark .pipeline-line{background:#1e3a5f}body.theme-dark .pipeline-stage small{color:#cbd5e1}body.theme-dark .offer-card{border-color:#14532d;background:#052e16;color:#bbf7d0}
-        body.theme-dark .idea-card p,body.theme-dark .journey-card p,body.theme-dark .footer-links{color:#cbd5e1}
-        body.theme-dark .idea-card.yellow{background:#3d3414}body.theme-dark .idea-card.pink{background:#3f2228}body.theme-dark .idea-card.violet{background:#312e63}
-        body.theme-dark .idea-art svg{stroke:#f8fafc}body.theme-dark .idea-art .fill{fill:#f8fafc}
-        body.theme-dark .footer-bottom{border-color:#1e3a5f}
-        body.theme-dark .application-card,body.theme-dark .application-toolbar,body.theme-dark .application-toolbar .search-inner,body.theme-dark .app-panel,body.theme-dark .app-panel summary,body.theme-dark .notification-item,body.theme-dark .profile-header,body.theme-dark .profile-hero-card,body.theme-dark .profile-score-card,body.theme-dark .profile-section-card,body.theme-dark .profile-detail-list div,body.theme-dark .cv-card,body.theme-dark .profile-activity-grid a,body.theme-dark .profile-photo,body.theme-dark .profile-photo-fallback,body.theme-dark .about-panel,body.theme-dark .about-metric,body.theme-dark .about-value,body.theme-dark .tracking-story,body.theme-dark .tracking-visual,body.theme-dark .tracking-node,body.theme-dark .tracking-card,body.theme-dark .tracking-card.support,body.theme-dark .tracking-card.care,body.theme-dark .tracking-badge,body.theme-dark .manage-copy,body.theme-dark .manage-summary .profile-box,body.theme-dark .manage-edit-stack .app-panel summary,body.theme-dark .job-detail-main,body.theme-dark .notification-card,body.theme-dark .empty-state,body.theme-dark .idea-card,body.theme-dark .idea-card:first-child,body.theme-dark .idea-card:nth-child(2),body.theme-dark .idea-card:nth-child(3){border-color:#1e3a5f!important;background:#111827!important;color:#e5e7eb!important;box-shadow:none}
-        body.theme-dark .side-user,body.theme-dark .profile-box,body.theme-dark .info,body.theme-dark .applicant,body.theme-dark .application-toolbar,body.theme-dark .filter-block,body.theme-dark .filter-panel,body.theme-dark .table-wrap,body.theme-dark .footer-bottom,body.theme-dark [style*="background:#f8fafc"]{border-color:#1e3a5f!important;background:#0f172a!important;color:#e5e7eb!important}
-        body.theme-dark .badge,body.theme-dark .about-chip,body.theme-dark .tracking-badge,body.theme-dark .filter-count,body.theme-dark .cv-upload-file,body.theme-dark .app-panel summary:after{background:#0c4a6e!important;color:#bae6fd!important;border-color:#1e3a5f!important}
-        body.theme-dark .table-primary,body.theme-dark .table-primary a,body.theme-dark .manage-summary strong,body.theme-dark .about-metric strong,body.theme-dark .filter-head h3,body.theme-dark .job-rich-text blockquote,body.theme-dark .rich-editor,body.theme-dark .company-line,body.theme-dark [style*="color:#475569"],body.theme-dark [style*="color:#334155"],body.theme-dark [style*="color:#0f172a"]{color:#e5e7eb!important}
-        body.theme-dark .table-secondary,body.theme-dark .table-tertiary,body.theme-dark .friendly-app-table .table-score-note,body.theme-dark .toolbar-meta,body.theme-dark .pagination-meta,body.theme-dark .check-item,body.theme-dark .profile-hero-copy p,body.theme-dark .profile-score-card span,body.theme-dark .profile-activity-grid span,body.theme-dark .about-panel p,body.theme-dark .about-value p,body.theme-dark .tracking-story-copy p,body.theme-dark .tracking-card span,body.theme-dark .match-details p,body.theme-dark .recruiter-summary,body.theme-dark .manage-copy p,body.theme-dark .manage-summary span{color:#cbd5e1!important}
-        body.theme-dark [style*="color:#0369a1"],body.theme-dark [style*="color:#0284c7"],body.theme-dark .match-details summary,body.theme-dark .match-details-link,body.theme-dark .data-table a:hover{color:#7dd3fc!important}
-        body.theme-dark .input::placeholder,body.theme-dark .textarea::placeholder,body.theme-dark .search input::placeholder,body.theme-dark .rich-editor:empty:before{color:#94a3b8!important}
-        body.theme-dark .data-table tbody tr:hover td,body.theme-dark .friendly-app-table tbody tr:hover td{background:#10233d!important}
-        body.theme-dark .status-pill.new,body.theme-dark .status-pill.applied{background:#0c4a6e;color:#bae6fd}body.theme-dark .status-pill.reviewed{background:#312e81;color:#c7d2fe}body.theme-dark .status-pill.shortlisted{background:#451a03;color:#fde68a}body.theme-dark .status-pill.accepted{background:#052e16;color:#bbf7d0}body.theme-dark .status-pill.rejected{background:#450a0a;color:#fecaca}
-        body.theme-dark .footer{border-color:#1e3a5f;background:#0b1220}body.theme-dark .footer-kdx-motion{border-color:#1e3a5f;background:linear-gradient(90deg,#0b1220,#10233d,#111827)}body.theme-dark .footer-kdx-word{-webkit-text-stroke-color:rgba(125,211,252,.5);filter:drop-shadow(0 18px 30px rgba(56,189,248,.12))}body.theme-dark .footer-panel{border-color:#1e3a5f;background:#111827;box-shadow:none}body.theme-dark .footer-links strong{color:#e5e7eb}body.theme-dark .footer-bottom,body.theme-dark .social-dot,body.theme-dark .language-pill{border-color:#1e3a5f;background:#111827;color:#bae6fd}
-        .blog-cover{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;border:1px solid #e0f2fe;border-radius:18px;background:#f8fafc}.blog-cover.detail{margin:0 0 24px}.blog-card-image{margin:-8px -8px 18px}.job-rich-text img{display:block;max-width:100%;height:auto;margin:18px 0;border-radius:18px}.blog-admin-form{max-width:760px}.blog-recent-list{margin-top:28px}.image-preview{display:none;max-width:260px;margin-top:12px}.image-preview.has-image{display:block}.blog-manage-list{max-width:980px;margin-top:28px}.blog-post-row{display:grid;grid-template-columns:72px minmax(0,1fr) auto;gap:14px;align-items:center}.blog-post-thumb{width:72px;height:52px;border:1px solid #e0f2fe;border-radius:12px;object-fit:cover;background:#f8fafc}.blog-post-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}body.theme-dark .blog-cover,body.theme-dark .blog-post-thumb{border-color:#1e3a5f;background:#0f172a}
-        .job-action-panel{position:sticky;top:104px;display:grid;gap:14px;align-self:start}.job-action-panel .job-top{margin-bottom:0}.job-side-facts{display:grid;gap:8px}.job-side-facts div,.job-match-card,.job-applied-note{border:1px solid #e0f2fe;border-radius:14px;background:#f8fbff;padding:12px}.job-side-facts span,.company-snapshot-grid span{display:block;margin-bottom:4px;color:#0369a1;font-size:12px;font-weight:950}.job-side-facts strong{display:block}.job-applied-note{display:grid;gap:4px}.job-applied-note span{color:#64748b;font-size:13px;font-weight:900}.job-match-card{display:grid;gap:10px}.job-match-card .overview-panel-head{margin-bottom:0}.job-match-card h3{font-size:16px}.job-match-list{display:grid;gap:8px}.job-match-list span{border:1px solid #e2e8f0;border-radius:12px;background:#fff;padding:9px 10px;color:#64748b;font-size:12px;font-weight:950}.job-match-list span.ok{border-color:#bbf7d0;background:#f0fdf4;color:#15803d}.job-section-card{border:1px solid #e0f2fe;border-radius:20px;background:#fff;padding:20px;margin-top:18px}.job-section-card:first-of-type{margin-top:0}.job-detail-main>.job-section-card:first-of-type{margin-top:0}.job-detail-hero,.job-detail-title{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:24px}.match-skill-grid,.company-snapshot-grid,.similar-job-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.company-snapshot-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.company-snapshot-grid div{border:1px solid #e0f2fe;border-radius:14px;background:#f8fbff;padding:14px}.tag.good{background:#dcfce7;color:#166534}.apply-card{margin-top:18px;background:#f8fafc}.similar-job-card{display:grid;gap:6px;border:1px solid #e0f2fe;border-radius:16px;background:#f8fbff;padding:14px;transition:.2s}.similar-job-card:hover{border-color:#7dd3fc;background:#f0f9ff}.similar-job-card span,.similar-job-card em{color:#64748b;font-size:13px;font-style:normal;font-weight:800}body.theme-dark .job-side-facts div,body.theme-dark .job-match-card,body.theme-dark .job-applied-note,body.theme-dark .job-section-card,body.theme-dark .company-snapshot-grid div,body.theme-dark .similar-job-card,body.theme-dark .apply-card,body.theme-dark .job-match-list span{border-color:#1e3a5f;background:#111827;color:#e5e7eb}@media(max-width:1024px){.job-action-panel{position:static}.match-skill-grid,.company-snapshot-grid,.similar-job-grid{grid-template-columns:1fr}.job-detail-hero,.job-detail-title{flex-direction:column}}
-        .dashboard-section{padding:34px 0 48px}.dashboard-section>.wrap{max-width:1440px}.dashboard-section .dash-hero{margin-bottom:20px;border-radius:24px;padding:24px 28px}.dashboard-section .dash-hero h2{font-size:32px}.dashboard-section .dash-hero p{margin:8px 0 0}.dashboard-section .dash-layout{grid-template-columns:245px minmax(0,1fr)!important;gap:20px}.dashboard-main{gap:18px}.dashboard-content-card{padding:22px}.dashboard-section .grid3{gap:16px}.dashboard-section .stat{padding:16px;border-radius:18px}.dashboard-section .stat-value{font-size:24px}.settings-grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(280px,.85fr);gap:18px;align-items:start}.settings-card{border:1px solid #e0f2fe;border-radius:18px;background:#f8fbff;padding:18px;gap:14px}.settings-grid>.settings-card:first-child{grid-row:span 2}.settings-card h3{font-size:18px}.settings-card .btn{width:max-content;min-width:150px}.settings-card .profile-box{padding:14px}.settings-card .tiny{line-height:1.5}body.theme-dark .settings-card{border-color:#1e3a5f;background:#111827;color:#e5e7eb}@media(max-width:1024px){.dashboard-section .dash-layout{grid-template-columns:1fr!important}.settings-grid{grid-template-columns:1fr}.settings-grid>.settings-card:first-child{grid-row:auto}}
-        .dashboard-section .wrap,.dashboard-section .dash-layout,.dashboard-section .dashboard-main,.dashboard-section .dashboard-content-card,.dashboard-section .notification-card,.dashboard-section .grid3,.dashboard-section .stat{min-width:0}.dashboard-section .dashboard-main{overflow:hidden}.dashboard-section .dashboard-content-card,.dashboard-section .notification-card{overflow:hidden}.dashboard-section .application-toolbar{grid-template-columns:minmax(220px,1fr) minmax(160px,220px) auto auto auto;overflow-x:auto}.dashboard-section .application-toolbar .btn{white-space:nowrap}.dashboard-section .notification-list{display:flex;gap:10px;overflow-x:auto;padding-bottom:4px}.dashboard-section .notification-item{flex:0 0 min(360px,85vw);min-width:0}.dashboard-section .notification-item strong,.dashboard-section .notification-item p{overflow:hidden;text-overflow:ellipsis}.dashboard-section .table-wrap{max-width:100%;overflow:auto}.dashboard-section .data-table{width:max-content;min-width:100%}@media(max-width:1180px){.dashboard-section .grid3{grid-template-columns:1fr}.dashboard-section .application-toolbar{grid-template-columns:1fr}.dashboard-section .application-toolbar .btn,.dashboard-section .application-toolbar .select{width:100%}}
-        .dashboard-section{font-size:14px}.dashboard-section>.wrap{max-width:1680px;padding-left:18px;padding-right:18px}.dashboard-section .dash-layout{grid-template-columns:190px minmax(0,1fr)!important;gap:16px}.dashboard-section .side{padding:14px;border-radius:18px}.dashboard-section .side-user{grid-template-columns:42px minmax(0,1fr);gap:10px;margin-bottom:14px;padding:8px}.dashboard-section .side-photo,.dashboard-section .side-user .icon{width:42px;height:42px}.dashboard-section .side-btn{min-height:42px;margin-bottom:5px;padding:9px 10px;font-size:14px}.dashboard-section .dashboard-main{gap:12px}.dashboard-section .notification-card{padding:14px}.dashboard-section .notification-card h3{font-size:18px;margin-bottom:10px!important}.dashboard-section .notification-item{flex-basis:min(300px,75vw);padding:10px 12px}.dashboard-section .notification-item strong{font-size:14px}.dashboard-section .notification-item p,.dashboard-section .notification-item span{font-size:12px}.dashboard-section .grid3{gap:10px}.dashboard-section .stat{padding:12px;border-radius:16px}.dashboard-section .stat .icon{width:42px;height:42px}.dashboard-section .stat-value{font-size:24px}.dashboard-section .dashboard-content-card{padding:14px}.dashboard-section .dashboard-content-card>div:first-child{margin-bottom:12px!important}.dashboard-section .application-toolbar{gap:8px;margin-bottom:12px;padding:8px;border-radius:16px}.dashboard-section .application-toolbar .search-inner{min-height:42px}.dashboard-section .input,.dashboard-section .select,.dashboard-section .textarea{padding:10px 12px;border-radius:12px}.dashboard-section .btn{padding:9px 14px;border-radius:12px;font-size:13px}.dashboard-section .data-table{font-size:11px}.dashboard-section .data-table th,.dashboard-section .data-table td{padding:8px 10px}.dashboard-section .table-primary{font-size:11px}.dashboard-section .table-secondary,.dashboard-section .table-tertiary{font-size:9px}.dashboard-section .friendly-app-table .candidate-stack{grid-template-columns:34px minmax(0,1fr);gap:8px}.dashboard-section .friendly-app-table .candidate-avatar{width:34px;height:34px;border-radius:12px}.dashboard-section .match-score strong{font-size:22px}.dashboard-section .match-score .score-bar{height:8px}.dashboard-section .status-pill{padding:5px 10px;font-size:11px}.dashboard-section .actions-cell{min-width:135px}.dashboard-section .friendly-app-table .table-mini-form .select{min-width:120px}.dashboard-section .friendly-app-table .table-mini-form{gap:6px}.dashboard-section .table-open-btn{margin-bottom:4px}@media(max-width:1180px){.dashboard-section .dash-layout{grid-template-columns:1fr!important}.dashboard-section .side{position:static}}
-        .dashboard-section .friendly-app-table .data-table{width:100%;min-width:0;table-layout:fixed}.dashboard-section .friendly-app-table th:nth-child(1),.dashboard-section .friendly-app-table td:nth-child(1){width:24%}.dashboard-section .friendly-app-table th:nth-child(2),.dashboard-section .friendly-app-table td:nth-child(2){width:15%}.dashboard-section .friendly-app-table th:nth-child(3),.dashboard-section .friendly-app-table td:nth-child(3){width:28%}.dashboard-section .friendly-app-table th:nth-child(4),.dashboard-section .friendly-app-table td:nth-child(4){width:9%}.dashboard-section .friendly-app-table th:nth-child(5),.dashboard-section .friendly-app-table td:nth-child(5){width:10%}.dashboard-section .friendly-app-table th:nth-child(6),.dashboard-section .friendly-app-table td:nth-child(6){width:14%}.dashboard-section .friendly-app-table .applicant-cell,.dashboard-section .friendly-app-table .job-cell,.dashboard-section .friendly-app-table .match-cell,.dashboard-section .friendly-app-table .status-cell,.dashboard-section .friendly-app-table .actions-cell,.dashboard-section .friendly-app-table .compact-progress{min-width:0}.dashboard-section .friendly-app-table .candidate-stack>div:last-child,.dashboard-section .friendly-app-table .job-cell,.dashboard-section .friendly-app-table .match-cell{min-width:0;overflow-wrap:anywhere}.dashboard-section .friendly-app-table .match-score{min-width:0}.dashboard-section .friendly-app-table .match-score .score-bar{max-width:100%}.dashboard-section .friendly-app-table .table-inline-actions{display:grid;grid-template-columns:1fr;gap:6px}.dashboard-section .friendly-app-table .table-inline-actions .btn,.dashboard-section .friendly-app-table .table-mini-form .btn,.dashboard-section .friendly-app-table .table-mini-form .select{width:100%;min-width:0}.dashboard-section .friendly-app-table .status-pill{white-space:normal}.dashboard-section .friendly-app-table .table-fit-wrap .match-details p{max-width:100%}
-        .requirement-breakdown{display:grid;gap:6px;margin-top:8px}.requirement-breakdown>strong{font-size:12px;color:#0f172a}.requirement-row{display:grid;grid-template-columns:74px minmax(90px,.85fr) minmax(0,1.15fr);gap:8px;align-items:start;border:1px solid #e0f2fe;border-radius:10px;background:#f8fbff;padding:8px}.requirement-row b{display:block;font-size:11px;line-height:1.25}.requirement-row small{display:block;margin-top:2px;color:#64748b;font-size:9px;font-weight:800}.requirement-row em{color:#475569;font-size:10px;font-style:normal;line-height:1.35}.requirement-status{display:inline-flex;justify-content:center;border-radius:999px;padding:4px 7px;font-size:9px;font-weight:950}.requirement-status.met{background:#dcfce7;color:#166534}.requirement-status.partial{background:#fef3c7;color:#92400e}.requirement-status.missing{background:#fee2e2;color:#991b1b}.requirement-status.unknown{background:#e2e8f0;color:#475569}body.theme-dark .requirement-breakdown>strong{color:#e5e7eb}body.theme-dark .requirement-row{border-color:#1e3a5f;background:#0f172a}body.theme-dark .requirement-row small,body.theme-dark .requirement-row em{color:#cbd5e1}@media(max-width:760px){.requirement-row{grid-template-columns:1fr}}
-        .user-overview{display:grid;gap:18px}.overview-panel{border:1px solid #e0f2fe;border-radius:20px;background:#fff;padding:18px;box-shadow:0 10px 24px rgba(14,165,233,.06)}.overview-primary{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:center;background:linear-gradient(135deg,#f8fbff,#eef7ff)}.overview-primary h3{margin-top:6px;font-size:24px}.overview-primary p{max-width:720px;margin:8px 0 0;color:#475569;line-height:1.65}.overview-actions{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end}.overview-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.overview-panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.overview-panel-head .tiny{color:#0369a1;font-weight:950}.pipeline-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.pipeline-summary div{border:1px solid #e0f2fe;border-radius:14px;background:#f8fbff;padding:12px}.pipeline-summary strong{display:block;font-size:22px}.pipeline-summary span{display:block;margin-top:4px;color:#64748b;font-size:12px;font-weight:900}.overview-latest{margin-top:14px;border-top:1px solid #e0f2fe;padding-top:14px}.overview-latest>span{display:block;margin-top:3px}.check-list{display:grid;gap:8px;margin-top:14px}.check-list span{border:1px solid #e0f2fe;border-radius:12px;background:#f8fbff;padding:10px 12px;color:#334155;font-size:13px;font-weight:900}.overview-list{display:grid;gap:10px}.overview-row{display:grid;gap:4px;border:1px solid #e0f2fe;border-radius:14px;background:#f8fbff;padding:12px;transition:.2s}.overview-row:hover{border-color:#7dd3fc;background:#f0f9ff}.overview-row span{color:#64748b;font-size:13px;font-weight:800}body.theme-dark .overview-panel,body.theme-dark .overview-primary,body.theme-dark .pipeline-summary div,body.theme-dark .check-list span,body.theme-dark .overview-row{border-color:#1e3a5f;background:#111827;color:#e5e7eb;box-shadow:none}body.theme-dark .overview-primary p,body.theme-dark .pipeline-summary span,body.theme-dark .overview-row span{color:#cbd5e1}@media(max-width:900px){.overview-primary,.overview-grid{grid-template-columns:1fr}.overview-actions{justify-content:flex-start}.pipeline-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:520px){.pipeline-summary{grid-template-columns:1fr}}
-        .profile-summary-pills{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.profile-summary-pills span{border:1px solid #bae6fd;border-radius:999px;background:#fff;padding:7px 11px;color:#0369a1;font-size:12px;font-weight:950}.friendly-task-list{display:grid;gap:8px}.task-item{display:grid;grid-template-columns:34px minmax(0,1fr) auto;gap:10px;align-items:center;border:1px solid #bae6fd;border-radius:14px;background:#f0f9ff;padding:10px 12px;transition:.2s}.task-item:hover{border-color:#38bdf8;background:#e0f2fe}.task-item.is-done{border-color:#bbf7d0;background:#f0fdf4}.task-dot{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:999px;background:#0ea5e9;color:#fff;font-size:11px;font-weight:950}.task-item.is-done .task-dot{background:#16a34a}.task-item strong{display:block;font-size:14px}.task-item small{display:block;margin-top:2px;color:#64748b;line-height:1.35}.task-item em{font-style:normal;color:#0369a1;font-size:12px;font-weight:950}.task-item.is-done em{color:#15803d}.recruiter-preview{display:grid;grid-template-columns:auto minmax(0,1fr);gap:12px;align-items:center;border:1px solid #e0f2fe;border-radius:16px;background:#f8fbff;padding:14px;margin-bottom:14px}.recruiter-preview span{display:block;margin-top:3px;color:#64748b;font-size:13px;font-weight:800}.recruiter-preview p{margin:6px 0 0;color:#0369a1;font-size:13px;font-weight:900;line-height:1.45}body.theme-dark .profile-summary-pills span,body.theme-dark .task-item,body.theme-dark .recruiter-preview{border-color:#1e3a5f;background:#111827;color:#e5e7eb}body.theme-dark .task-item small,body.theme-dark .recruiter-preview span{color:#cbd5e1}
-        .profile-tools{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:center}.profile-tools p{margin:6px 0 0;line-height:1.5}.profile-tool-actions{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end}.profile-tools [data-profile-tool-status]{grid-column:1/-1;color:#15803d;font-weight:900}@media(max-width:720px){.profile-tools{grid-template-columns:1fr}.profile-tool-actions{justify-content:flex-start}.profile-tool-actions .btn{width:100%}}@media print{.header,.footer,.side,.nav-actions,.profile-tools,.notification-card,.dashboard-main>.grid3{display:none!important}.dash-layout{display:block!important}.dashboard-content-card,.profile-section-card,.profile-hero-card{box-shadow:none!important}.section{padding:0!important}.wrap{max-width:none!important}}
-        @media(max-width:1024px){.theme-mobile{display:inline-flex}.nav-actions .theme-toggle{display:none}}
-        @media(max-width:1024px){.idea-grid,.journey-grid,.innovation-grid,.footer-top{grid-template-columns:1fr 1fr}.idea-card{min-height:360px}.footer-brand{font-size:64px}}
-        @media(max-width:720px){.idea-grid,.journey-grid,.innovation-grid,.footer-top{grid-template-columns:1fr}.footer-bottom{align-items:flex-start;flex-direction:column}.idea-art{height:170px}.idea-art svg{width:150px;height:150px}.recruit-animation{padding:18px}.pipeline-track{height:170px}.pipeline-node{width:54px;height:54px;border-radius:18px;font-size:22px}.pipeline-stage small{font-size:11px}.pipeline-line{left:24px;right:24px;top:48px}.candidate-dot{top:39px}.offer-card{left:18px;right:auto;bottom:4px}}
-        @media(max-width:1180px){.wrap{padding-left:20px;padding-right:20px}.hero-grid{gap:30px}.jobs-explorer{grid-template-columns:280px 1fr;gap:22px}.grid3,.jobs-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.grid4{grid-template-columns:repeat(2,minmax(0,1fr))}.journey-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-        @media(max-width:1024px){.header{position:relative}.nav{display:grid;grid-template-columns:1fr auto;align-items:center}.brand{min-width:0}.nav-links{grid-column:1/-1;order:3;display:flex;width:100%;overflow-x:auto;padding:8px 0 2px;scrollbar-width:thin}.nav-link{flex:0 0 auto}.nav-actions{display:flex;justify-content:flex-end;margin-left:auto}.nav-actions>a,.nav-actions>form,.nav-actions>.tiny{display:none}.theme-mobile,.mobile-menu{display:none}.hero{padding:48px 0}.hero-grid{grid-template-columns:1fr}.hero-panel{max-width:720px}.auth-grid,.dash-layout,.detail-grid,.jobs-explorer,.job-detail-layout{grid-template-columns:1fr}.filter-panel{position:static}.profile-grid,.info-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.section{padding:48px 0}.footer-top{grid-template-columns:repeat(2,minmax(0,1fr))}}
-        @media(max-width:760px){.wrap{padding-left:16px;padding-right:16px}.nav{position:relative;display:grid;grid-template-columns:1fr auto auto;gap:10px}.brand{gap:10px}.brand-icon{width:50px;height:50px;border-radius:16px}.brand-icon img{width:42px;height:42px}.brand-title{font-size:18px}.brand-sub{font-size:11px}.nav-menu-toggle{display:inline-flex}.nav-links{position:absolute;top:calc(100% + 10px);right:16px;left:16px;z-index:80;display:none;width:auto;overflow:visible;border:1px solid #dbeafe;border-radius:18px;background:#fff;padding:10px;box-shadow:0 22px 50px rgba(15,23,42,.16)}.nav.nav-open .nav-links{display:grid;grid-template-columns:1fr;gap:6px}.nav-mobile-actions{display:grid;gap:6px;border-top:1px solid #e0f2fe;margin-top:6px;padding-top:8px}.nav-mobile-actions form{margin:0}.nav-action-button{width:100%;border:0;background:transparent;color:#475569;font:inherit;font-weight:800;cursor:pointer}.nav-link{display:flex;align-items:center;justify-content:flex-start;min-height:44px;padding:10px 12px;text-align:left;white-space:normal}.nav-link::before{content:"›";display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;margin-right:10px;border-radius:999px;background:#f0f9ff;color:#0369a1;font-weight:950}.nav-actions{align-self:start}.theme-toggle{width:42px;height:42px}body.theme-dark .nav-links{border-color:#1e3a5f;background:#111827}body.theme-dark .nav-mobile-actions{border-color:#1e3a5f}body.theme-dark .nav-action-button{color:#cbd5e1}body.theme-dark .nav-link::before{background:#10233d;color:#bae6fd}h1{font-size:42px;letter-spacing:0}h2{font-size:30px;letter-spacing:0}.lead{font-size:16px;line-height:1.65}.search,.hero-actions,.sort-row,.jobs-toolbar{align-items:stretch;flex-direction:column}.hero-actions .btn,.search .btn,.sort-row .select{width:100%}.hero-panel{border-radius:22px}.panel-inner,.card-pad,.job-detail-main,.side{padding:18px}.grid3,.grid4,.jobs-grid,.journey-grid,.idea-grid,.innovation-grid,.footer-top,.profile-grid,.info-grid,.skill-grid{grid-template-columns:1fr}.idea-card{min-height:auto}.applicant,.application-row,.footer-bottom{align-items:flex-start;flex-direction:column}.table-actions,.application-row form{width:100%}.table-actions .select,.table-actions .btn,.application-row .btn{width:100%;min-width:0}.pipeline-track{min-width:0;height:138px}.pipeline-line{left:24px;right:24px;top:50px}.pipeline-node{width:56px;height:56px;border-radius:18px;font-size:22px}.pipeline-stage{top:18px}.pipeline-stage small{max-width:72px;font-size:11px;line-height:1.2;text-align:center;white-space:normal}.candidate-dot{top:41px;left:20px}.offer-card{right:18px;bottom:0;font-size:12px}.footer-brand{font-size:48px}.footer-bottom{gap:14px}.social-row{flex-wrap:wrap}.progress-track{grid-template-columns:1fr 1fr}.data-table{min-width:720px}}
-        @media(max-width:520px){.recruit-animation{padding:16px}.recruit-animation-head{align-items:flex-start;flex-direction:column;margin-bottom:16px}.pipeline-track{height:auto;min-height:390px}.pipeline-line{left:27px;right:auto;top:36px;bottom:54px;width:4px;height:auto}.pipeline-stage{left:0!important;right:auto!important;transform:none!important;display:grid;grid-template-columns:56px 1fr;align-items:center;justify-items:start;width:100%;gap:12px}.pipeline-stage:nth-child(2){top:0}.pipeline-stage:nth-child(3){top:72px}.pipeline-stage:nth-child(4){top:144px}.pipeline-stage:nth-child(5){top:216px}.pipeline-stage:nth-child(6){top:288px}.pipeline-stage small{max-width:none;font-size:13px;text-align:left}.candidate-dot{left:17px;top:16px;animation:candidateMoveMobile 5s ease-in-out infinite}.candidate-dot.two{animation-delay:1.55s}.candidate-dot.three{animation-delay:3.1s}.offer-card{left:68px;right:auto;bottom:0}.pipeline-node{width:56px;height:56px}@keyframes candidateMoveMobile{0%{top:16px;transform:scale(.8);opacity:0}12%{opacity:1}26%{top:88px;transform:scale(1)}46%{top:160px;transform:scale(1)}66%{top:232px;transform:scale(1)}86%{top:304px;transform:scale(.92);opacity:1}100%{top:304px;transform:scale(.7);opacity:0}}}
-        @media(max-width:420px){.wrap{padding-left:12px;padding-right:12px}.nav{gap:10px}.nav-link{padding:8px 10px;font-size:13px}.theme-toggle{width:40px;height:40px}.pill{max-width:100%;white-space:normal;border-radius:16px}h1{font-size:36px}.hero{padding-top:34px}.section{padding:38px 0}.btn{width:100%;padding:11px 14px}.nav-actions .theme-toggle{width:40px}.search-inner{padding:0 6px}.footer-brand{font-size:40px}.role-tabs{grid-template-columns:1fr}.progress-track{grid-template-columns:1fr}}
-    </style>
+    <?php include __DIR__ . '/includes/inline_styles.php'; ?>
 </head>
 <body>
-<header class="header">
-    <div class="wrap nav">
-        <a class="brand" href="<?= h(app_url('home')) ?>">
-            <span class="brand-icon"><img src="<?= h(asset_url('assets/kdx-logo.svg')) ?>" alt=""></span>
-            <span><span class="brand-title">KDXJobs</span><br><span class="brand-sub">Tech Hiring Platform</span></span>
-        </a>
-        <button class="btn outline nav-menu-toggle" type="button" data-nav-toggle aria-label="Open navigation menu" aria-expanded="false">&#9776;</button>
-        <nav class="nav-links">
-            <?php
-            $navItems = [['home','Home'],['jobs','Jobs'],['companies','Companies'],['blog','Blog']];
-            if (!$user) {
-                $navItems[] = ['login', 'Login'];
-                $navItems[] = ['register', 'Register'];
-            } elseif (is_admin_role($user['role'])) {
-                $navItems[] = ['admin', 'Admin Panel'];
-            } elseif ($user['role'] === 'company') {
-                $navItems[] = ['company', 'Company Dashboard'];
-            } else {
-                $navItems[] = ['user', 'Job Seeker Dashboard'];
-            }
-            foreach ($navItems as [$id,$label]):
-            ?>
-                <a class="nav-link <?= $page === $id ? 'active' : '' ?>" href="<?= h(app_url($id)) ?>"><?= h($label) ?></a>
-            <?php endforeach; ?>
-            <div class="nav-mobile-actions">
-                <?php if ($user): ?>
-                    <span class="tiny muted"><?= h($user['full_name'] ?: ($user['company_name'] ?: $user['email'])) ?></span>
-                    <form method="post"><?= csrf_input() ?><input type="hidden" name="action" value="logout"><button class="nav-link nav-action-button" type="submit">Logout</button></form>
-                <?php else: ?>
-                    <a class="nav-link" href="<?= h(app_url('login')) ?>">Login</a>
-                    <a class="nav-link" href="<?= h(app_url('register')) ?>">Register</a>
-                <?php endif; ?>
-            </div>
-        </nav>
-        <div class="nav-actions">
-            <button class="btn outline theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark mode" title="Switch theme"><span data-theme-icon aria-hidden="true">&#9790;</span><span class="sr-only" data-theme-label>Dark mode</span></button>
-            <?php if ($user): ?>
-                <span class="tiny muted"><?= h($user['full_name'] ?: ($user['company_name'] ?: $user['email'])) ?></span>
-                <form method="post"><?= csrf_input() ?><input type="hidden" name="action" value="logout"><button class="btn outline">Logout</button></form>
-            <?php else: ?>
-                <a class="btn outline" href="<?= h(app_url('login')) ?>">Login</a>
-                <a class="btn" href="<?= h(app_url('register')) ?>">Register</a>
-            <?php endif; ?>
-        </div>
-        <button class="btn outline theme-toggle theme-mobile" type="button" data-theme-toggle aria-label="Switch to dark mode" title="Switch theme"><span data-theme-icon aria-hidden="true">&#9790;</span><span class="sr-only" data-theme-label>Dark mode</span></button>
-        <a class="btn outline mobile-menu" href="<?= h(app_url('jobs')) ?>">Menu</a>
-    </div>
-</header>
+<?php include __DIR__ . '/includes/layout_header.php'; ?>
 
 <?php if ($message): ?><div class="alert ok"><?= h($message) ?></div><?php endif; ?>
 <?php if ($error): ?><div class="alert bad"><?= h($error) ?></div><?php endif; ?>
 
-<?php if ($page === 'home'): ?>
-<section class="hero">
-    <div class="orb"></div>
-    <div class="wrap hero-grid">
-        <div>
-            <span class="pill">🛡️ Smart Recruitment Platform</span>
-            <h1>Find the right job. Hire the right talent.</h1>
-            <p class="lead">A clean recruitment website for job seekers, companies, and admins, built with modern profiles, dashboards, applications, and job management.</p>
-            <form class="search" method="get">
-	            <input type="hidden" name="page" value="jobs">
-                <div class="search-inner"><span>🔍</span><input name="q" value="<?= h($search) ?>" placeholder="Search job title, company, or skill"></div>
-                <button class="btn">Find Jobs</button>
-            </form>
-            <div class="hero-actions">
-                <a class="btn dark" href="<?= h(app_url('jobs')) ?>">Find Jobs</a>
-                <a class="btn outline" href="<?= h(app_url('company')) ?>">Post a Job</a>
-            </div>
-        </div>
-        <div class="card hero-panel">
-            <div class="panel-inner">
-                <div class="grid">
-                    <div class="card stat"><span class="icon">💼</span><div><div class="tiny muted">Open Jobs</div><div class="stat-value"><?= h($stats['openJobs']) ?></div></div></div>
-                    <div class="card stat"><span class="icon">🏢</span><div><div class="tiny muted">Companies</div><div class="stat-value"><?= h($stats['companies']) ?></div></div></div>
-                    <div class="card stat"><span class="icon">👥</span><div><div class="tiny muted">Job Seekers</div><div class="stat-value"><?= h($stats['jobSeekers']) ?></div></div></div>
-                </div>
-                <div class="card card-pad" style="margin-top:24px">
-                    <h3 style="margin-bottom:16px">Latest Applicants</h3>
-                    <?php foreach (array_slice($applicants, 0, 3) as $a): ?>
-                        <div class="applicant">
-                            <div><strong><?= h($a['applicant_name']) ?></strong><br><span class="tiny muted"><?= h($a['role']) ?></span></div>
-                            <span class="badge"><?= h($a['status']) ?></span>
-                        </div>
-                    <?php endforeach; ?>
-                </div>
-            </div>
-        </div>
-    </div>
-    <div class="wrap hero-pipeline-row">
-        <div class="recruit-animation" aria-label="Animated recruitment pipeline">
-            <div class="recruit-animation-head">
-                <strong>Hiring pipeline live</strong>
-                <span>Offer ready</span>
-            </div>
-            <div class="pipeline-track" aria-hidden="true">
-                <div class="pipeline-line"></div>
-                <div class="pipeline-stage"><div class="pipeline-node">CV</div><small>Profile</small></div>
-                <div class="pipeline-stage"><div class="pipeline-node">✓</div><small>Review</small></div>
-                <div class="pipeline-stage"><div class="pipeline-node">★</div><small>Shortlist</small></div>
-                <div class="pipeline-stage"><div class="pipeline-node">Q</div><small>Interview</small></div>
-                <div class="pipeline-stage"><div class="pipeline-node">↗</div><small>Offer</small></div>
-                <span class="candidate-dot"></span>
-                <span class="candidate-dot two"></span>
-                <span class="candidate-dot three"></span>
-                <div class="offer-card"><i>✓</i> Candidate matched</div>
-            </div>
-        </div>
-    </div>
-</section>
-<section class="section career-potential">
-    <div class="wrap">
-        <div class="section-title"><p class="eyebrow">Why KDXJOBS</p><h2>A career platform built for local momentum</h2><p>Not just listings. KDXJOBS helps people understand where they fit, what to improve, and how to move forward.</p></div>
-        <div class="idea-grid">
-            <article class="idea-card yellow">
-                <div class="idea-art" aria-hidden="true">
-                    <svg viewBox="0 0 200 200">
-                        <path d="M58 110l36-58 48 96"></path><path d="M85 88h36"></path><path d="M56 126c20 24 70 24 90 0"></path><path d="M42 56l-16-10"></path><path d="M158 56l16-10"></path><path d="M40 88H20"></path><path d="M160 88h20"></path><circle cx="58" cy="150" r="8"></circle><circle cx="142" cy="150" r="8"></circle>
-                    </svg>
-                </div>
-                <div><h3>Launch-ready profiles</h3><p>Help candidates turn skills, CVs, and project experience into profiles recruiters can read quickly.</p></div>
-            </article>
-            <article class="idea-card pink">
-                <div class="idea-art" aria-hidden="true">
-                    <svg viewBox="0 0 200 200">
-                        <circle cx="72" cy="64" r="42"></circle><path d="M58 62c12 14 28 14 42 0"></path><path d="M52 92c20 20 44 20 64 0"></path><path d="M126 44l34-24 16 18-34 24"></path><path d="M122 80l42 44"></path><circle cx="134" cy="136" r="28"></circle><path d="M124 136c8 8 18 8 26 0"></path>
-                    </svg>
-                </div>
-                <div><h3>Better matches</h3><p>Surface roles by skills, salary, location, and work style so applicants waste less time guessing.</p></div>
-            </article>
-            <article class="idea-card violet">
-                <div class="idea-art" aria-hidden="true">
-                    <svg viewBox="0 0 200 200">
-                        <path d="M36 118l82-82 34 34-82 82z"></path><circle cx="130" cy="58" r="36"></circle><path d="M120 58c8 10 22 10 30 0"></path><path d="M34 152h112"></path><path d="M146 152l-22 18"></path><path d="M146 152l-22-18"></path><path d="M166 58h18"></path>
-                    </svg>
-                </div>
-                <div><h3>Status clarity</h3><p>Keep applications visible from submitted to reviewed, shortlisted, accepted, or rejected.</p></div>
-            </article>
-        </div>
-    </div>
-</section>
-<section class="section">
-    <div class="wrap">
-        <div class="section-title"><p class="eyebrow">How It Works</p><h2>From first search to final update</h2><p>A calmer hiring flow for job seekers, companies, and recruiter admins.</p></div>
-        <div class="journey-grid">
-            <article class="journey-card"><span class="journey-icon">01</span><h3>Map your direction</h3><p>Choose the roles, cities, industries, and work styles that match where you want to grow next.</p></article>
-            <article class="journey-card"><span class="journey-icon">02</span><h3>Show real strengths</h3><p>Highlight practical skills, languages, projects, and CV details recruiters can understand quickly.</p></article>
-            <article class="journey-card"><span class="journey-icon">03</span><h3>Move faster on good roles</h3><p>Save time with ready profile details, clean job filters, and direct applications from one place.</p></article>
-            <article class="journey-card"><span class="journey-icon">04</span><h3>Stay informed after applying</h3><p>Follow each application status and know when a recruiter has reviewed or shortlisted you.</p></article>
-        </div>
-    </div>
-</section>
-<section class="section" id="application-tracking">
-    <div class="wrap">
-        <div class="tracking-story">
-            <div class="tracking-story-grid">
-                <div class="tracking-story-copy">
-                    <span class="tracking-ribbon">Application Tracking</span>
-                    <h2>We do more than collect applications. We stay with people through every detail.</h2>
-                    <p>Most recruiting services stop after the application is sent. KDXJobs is built to keep candidates informed, supported, and moving with confidence. We show real progress, highlight what happens next, and make every update feel human instead of silent.</p>
-                    <div class="tracking-badges">
-                        <span class="tracking-badge">Live status updates</span>
-                        <span class="tracking-badge">Interview reminders</span>
-                        <span class="tracking-badge">Human support at every stage</span>
-                    </div>
-                </div>
-                <div class="tracking-visual" aria-label="Animated application tracking story">
-                    <div class="tracking-glow"></div>
-                    <div class="tracking-line"></div>
-                    <div class="tracking-pulse"></div>
-                    <div class="tracking-step">
-                        <div class="tracking-node">✉</div>
-                        <div class="tracking-card">
-                            <strong>Applied with clarity</strong>
-                            <span>Your application is received and instantly visible inside your journey.</span>
-                        </div>
-                    </div>
-                    <div class="tracking-step">
-                        <div class="tracking-node">👀</div>
-                        <div class="tracking-card">
-                            <strong>Reviewed with transparency</strong>
-                            <span>You can see when your application is reviewed instead of wondering in silence.</span>
-                        </div>
-                    </div>
-                    <div class="tracking-step">
-                        <div class="tracking-node">💬</div>
-                        <div class="tracking-card support">
-                            <strong>Guided with real support</strong>
-                            <span>Interview notes, follow-ups, and service chat keep you informed in every detail.</span>
-                        </div>
-                    </div>
-                    <div class="tracking-step" style="margin-bottom:0">
-                        <div class="tracking-node">♥</div>
-                        <div class="tracking-card care">
-                            <strong>Different because we care</strong>
-                            <span>We are not just a recruiting board. We stay beside you until the next step becomes clear.</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</section>
-<section class="section innovation-band">
-    <div class="wrap innovation-grid">
-        <div class="innovation-lead">
-            <p class="eyebrow">New Ideas</p>
-            <h2>Next features worth building</h2>
-            <p class="lead">A few product ideas that would make KDXJOBS more useful than a standard job board.</p>
-        </div>
-        <article class="innovation-card"><span class="tiny">Candidate</span><h3>CV health check</h3><p class="muted">Flag missing phone numbers, weak summaries, or skills that match common job filters.</p></article>
-        <article class="innovation-card"><span class="tiny">Company</span><h3>Hiring pipeline board</h3><p class="muted">Give employers a simple view of new, reviewed, shortlisted, and final-stage applicants.</p></article>
-        <article class="innovation-card"><span class="tiny">Admin</span><h3>Market insights</h3><p class="muted">Show which skills, cities, and salaries are trending across posted jobs.</p></article>
-    </div>
-</section>
-<section class="section">
-    <div class="wrap">
-        <div class="section-title"><p class="eyebrow">Featured Jobs</p><h2>Fresh opportunities for talented people</h2><p>Simple job cards with clear information and fast application flow.</p></div>
-        <div class="grid grid3">
-            <?php foreach (array_slice($jobs, 0, 3) as $job): ?>
-                <?php include __DIR__ . '/partials_job_card.php'; ?>
-            <?php endforeach; ?>
-        </div>
-    </div>
-</section>
-<?php endif; ?>
+<?php include __DIR__ . '/pages/home.php'; ?>
 
 <?php if ($page === 'jobs'): ?>
 <section class="section">
 	    <div class="wrap">
-	        <div class="section-title"><p class="eyebrow">Jobs</p><h2>Explore modern job listings</h2><p>Browse open jobs from companies and recruiters.</p></div>
+	        <div class="section-title"><p class="eyebrow"><?= h(tr('jobs.eyebrow', 'Jobs')) ?></p><h2><?= h(tr('jobs.title', 'Explore modern job listings')) ?></h2><p><?= h(tr('jobs.text', 'Browse open jobs from companies and recruiters.')) ?></p></div>
         <?php if (isset($_GET['job']) && $selectedJob): ?>
         <?php
         $selectedJobTags = tags($selectedJob);
@@ -5652,14 +5800,14 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                     </div>
                 </section>
                 <div id="apply" class="card card-pad apply-card">
-                    <h3 style="margin-bottom:16px">Apply Now</h3>
+                    <h3 style="margin-bottom:16px"><?= h('Apply Now') ?></h3>
                     <?php if (!$user): ?>
                         <div class="profile-box">
-                            <strong>Login required</strong>
-                            <p class="tiny muted" style="margin:10px 0 18px">You need an account before you can apply for this job.</p>
+                            <strong><?= h('Login required') ?></strong>
+                            <p class="tiny muted" style="margin:10px 0 18px"><?= h('You need an account before you can apply for this job.') ?></p>
                             <div style="display:flex;gap:12px;flex-wrap:wrap">
-                                <a class="btn" href="<?= h(app_url('login')) ?>">Login</a>
-                                <a class="btn outline" href="<?= h(app_url('register')) ?>">Register</a>
+                                <a class="btn" href="<?= h(app_url('login')) ?>"><?= h(tr('nav.login', 'Login')) ?></a>
+                                <a class="btn outline" href="<?= h(app_url('register')) ?>"><?= h(tr('nav.register', 'Register')) ?></a>
                             </div>
                         </div>
                     <?php elseif ($existingApplication): ?>
@@ -5723,11 +5871,11 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
             <form class="card filter-panel" method="get">
                 <input type="hidden" name="page" value="jobs">
                 <div class="filter-head">
-                    <h3>Filters</h3>
+                    <h3><?= h('Filters') ?></h3>
                     <?php if ($activeJobFilters > 0): ?><span class="filter-count"><?= h((string) $activeJobFilters) ?></span><?php endif; ?>
                 </div>
                 <details class="filter-block" <?= ($minSalary > 0 || $maxSalary > 0) ? 'open' : '' ?>>
-                    <summary>Monthly Range</summary>
+                    <summary><?= h('Monthly Range') ?></summary>
                     <div class="filter-body filter-range">
                         <label class="label">Min<input class="input" type="number" min="0" name="min_salary" value="<?= $minSalary > 0 ? h((string) $minSalary) : '' ?>" placeholder="400000"></label>
                         <label class="label">Max<input class="input" type="number" min="0" name="max_salary" value="<?= $maxSalary > 0 ? h((string) $maxSalary) : '' ?>" placeholder="2000000"></label>
@@ -5767,8 +5915,8 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                     </div>
                 </details>
                 <div class="filter-actions">
-                    <button class="btn">Apply</button>
-                    <a class="btn outline" href="<?= h(app_url('jobs')) ?>">Clear</a>
+                    <button class="btn"><?= h('Apply') ?></button>
+                    <a class="btn outline" href="<?= h(app_url('jobs')) ?>"><?= h(tr('common.clear', 'Clear')) ?></a>
                 </div>
             </form>
             <main>
@@ -5781,9 +5929,9 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
             <?php if ($minSalary > 0): ?><input type="hidden" name="min_salary" value="<?= h((string) $minSalary) ?>"><?php endif; ?>
             <?php if ($maxSalary > 0): ?><input type="hidden" name="max_salary" value="<?= h((string) $maxSalary) ?>"><?php endif; ?>
             <input type="hidden" name="sort" value="<?= h($jobSort) ?>">
-            <div class="search-inner"><span>🔍</span><input name="q" value="<?= h($search) ?>" placeholder="Search job title, company, or skill"></div>
-            <button class="btn">Search</button>
-            <?php if ($search !== ''): ?><a class="btn outline" href="<?= h(app_url('jobs')) ?>">Clear</a><?php endif; ?>
+            <div class="search-inner"><span>🔍</span><input name="q" value="<?= h($search) ?>" placeholder="<?= h(tr('hero.search_placeholder', 'Search job title, company, or skill')) ?>"></div>
+            <button class="btn"><?= h(tr('common.search', 'Search')) ?></button>
+            <?php if ($search !== ''): ?><a class="btn outline" href="<?= h(app_url('jobs')) ?>"><?= h(tr('common.clear', 'Clear')) ?></a><?php endif; ?>
         </form>
         <div class="jobs-toolbar" style="margin-bottom:20px">
             <p class="muted" style="margin:0">Showing <?= h((string) count($jobs)) ?> out of <?= h((string) count($allJobs)) ?> jobs.</p>
@@ -6002,70 +6150,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
 </section>
 <?php endif; ?>
 
-<?php if ($page === 'blog'): ?>
-<?php
-$publishedPosts = array_values(array_filter($blogPosts, static fn(array $post): bool => ($post['status'] ?? 'published') === 'published'));
-$selectedPostId = (int) ($_GET['post'] ?? 0);
-$selectedPost = null;
-foreach ($publishedPosts as $post) {
-    if ((int) $post['id'] === $selectedPostId) {
-        $selectedPost = $post;
-        break;
-    }
-}
-?>
-<section class="section">
-    <div class="wrap">
-        <?php if ($selectedPost): ?>
-            <div class="job-detail-layout">
-                <aside class="card card-pad">
-                    <a class="btn outline" style="width:100%;margin-bottom:18px" href="<?= h(app_url('blog')) ?>">Back to Blog</a>
-                    <span class="badge"><?= h($selectedPost['category'] ?: 'Career Advice') ?></span>
-                    <h3 style="margin-top:18px"><?= h($selectedPost['title']) ?></h3>
-                    <p class="tiny muted" style="line-height:1.7">By <?= h($selectedPost['author_name'] ?: 'KDXJOBS Team') ?><br><?= h(date('M j, Y', strtotime((string) $selectedPost['created_at']))) ?></p>
-                    <?php $recentPosts = array_values(array_filter($publishedPosts, static fn(array $post): bool => (int) $post['id'] !== (int) $selectedPost['id'])); ?>
-                    <?php if ($recentPosts): ?>
-                        <div class="blog-recent-list">
-                            <h3 style="margin-bottom:14px">Recent Blog Posts</h3>
-                            <div class="grid">
-                                <?php foreach (array_slice($recentPosts, 0, 4) as $post): ?>
-                                    <a class="applicant" href="<?= h(app_url('blog', ['post' => $post['id']])) ?>">
-                                        <span><strong><?= h($post['title']) ?></strong><br><span class="tiny muted"><?= h(date('M j, Y', strtotime((string) $post['created_at']))) ?></span></span>
-                                    </a>
-                                <?php endforeach; ?>
-                            </div>
-                        </div>
-                    <?php endif; ?>
-                </aside>
-                <main class="card job-detail-main">
-                    <?php if (!empty($selectedPost['cover_image'])): ?><img class="blog-cover detail" src="<?= h(download_url((string) $selectedPost['cover_image'])) ?>" alt="<?= h($selectedPost['title']) ?>"><?php endif; ?>
-                    <p class="eyebrow" style="margin-bottom:8px"><?= h($selectedPost['category'] ?: 'Career Advice') ?></p>
-                    <h2><?= h($selectedPost['title']) ?></h2>
-                    <?php if (!empty($selectedPost['excerpt'])): ?><p class="lead" style="margin-top:16px"><?= h($selectedPost['excerpt']) ?></p><?php endif; ?>
-                    <div class="job-rich-text" style="margin-top:28px"><?= rich_text_html($selectedPost['content'] ?? '') ?></div>
-                </main>
-            </div>
-        <?php else: ?>
-            <div class="section-title"><p class="eyebrow">Blog</p><h2>Recent Blog Posts</h2><p>Practical advice for job seekers, employers, and recruiters building stronger hiring habits.</p></div>
-            <div class="grid grid3">
-                <?php if (!$publishedPosts): ?>
-                    <div class="card empty-state" style="grid-column:1/-1"><h3>No blog posts yet</h3><p class="muted">Admins can publish the first post from the admin dashboard.</p></div>
-                <?php endif; ?>
-                <?php foreach ($publishedPosts as $post): ?>
-                    <article class="card job-card card-pad">
-                        <?php if (!empty($post['cover_image'])): ?><img class="blog-cover blog-card-image" src="<?= h(download_url((string) $post['cover_image'])) ?>" alt="<?= h($post['title']) ?>"><?php endif; ?>
-                        <span class="badge"><?= h($post['category'] ?: 'Career Advice') ?></span>
-                        <h3 style="margin-top:18px"><?= h($post['title']) ?></h3>
-                        <p class="muted" style="line-height:1.75"><?= h($post['excerpt'] ?: substr(strip_tags((string) $post['content']), 0, 150) . '...') ?></p>
-                        <p class="tiny muted">By <?= h($post['author_name'] ?: 'KDXJOBS Team') ?> - <?= h(date('M j, Y', strtotime((string) $post['created_at']))) ?></p>
-                        <a class="btn outline" style="width:100%;margin-top:16px" href="<?= h(app_url('blog', ['post' => $post['id']])) ?>">Read Article</a>
-                    </article>
-                <?php endforeach; ?>
-            </div>
-        <?php endif; ?>
-    </div>
-</section>
-<?php endif; ?>
+<?php include __DIR__ . '/pages/blog.php'; ?>
 
 <?php if ($page === 'login' || $page === 'register'): ?>
 <?php $isRegister = $page === 'register'; ?>
@@ -7356,51 +7441,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
 </section>
 <?php endif; ?>
 
-<footer class="footer">
-    <div class="wrap">
-        <div class="footer-kdx-motion" aria-label="KDXJOBS">
-            <span class="footer-kdx-word" aria-hidden="true">
-                <span class="footer-kdx-letter">K</span><span class="footer-kdx-letter">D</span><span class="footer-kdx-letter">X</span><span class="footer-kdx-letter">J</span><span class="footer-kdx-letter">O</span><span class="footer-kdx-letter">B</span><span class="footer-kdx-letter">S</span>
-            </span>
-        </div>
-        <div class="footer-top">
-            <div class="footer-links">
-                <strong>Platform</strong>
-                <a href="<?= h(app_url('home')) ?>">Home</a>
-                <a href="<?= h(app_url('jobs')) ?>">Browse Jobs</a>
-                <a href="<?= h(app_url('companies')) ?>">Hiring Companies</a>
-                <a href="<?= h(app_url('blog')) ?>">Blog</a>
-            </div>
-            <div class="footer-links">
-                <strong>Accounts</strong>
-                <a href="<?= h(app_url('register')) ?>">Create Account</a>
-                <a href="<?= h(app_url('login')) ?>">Login</a>
-                <a href="<?= h(app_url('company')) ?>">Company Access</a>
-            </div>
-            <div class="footer-links">
-                <strong>Company</strong>
-                <a href="<?= h(app_url('about')) ?>">About Us</a>
-                <a href="<?= h(app_url('faq')) ?>">FAQ</a>
-                <a href="<?= h(app_url('policy')) ?>">Privacy Policy</a>
-                <a href="<?= h(app_url('terms')) ?>">Terms</a>
-                <a href="<?= h(app_url('contact')) ?>">Contact Us</a>
-            </div>
-        </div>
-        <div class="footer-bottom">
-            <span class="tiny muted">&copy;2026. Built for clear, modern recruitment.</span>
-            <div class="social-row" aria-label="Social links">
-                <span class="language-pill">EN</span>
-                <span class="social-dot">in</span>
-                <span class="social-dot">f</span>
-                <span class="social-dot">ig</span>
-                <span class="social-dot">tk</span>
-            </div>
-        </div>
-    </div>
-</footer>
-<link href="https://cdn.jsdelivr.net/npm/quill@1.3.7/dist/quill.snow.css" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/quill@1.3.7/dist/quill.min.js"></script>
-<script src="https://cdn.ckeditor.com/ckeditor5/41.4.2/classic/ckeditor.js"></script>
-<script src="<?= h(asset_url('assets/app.js?v=9')) ?>" defer></script>
+<?php include __DIR__ . '/includes/layout_footer.php'; ?>
 </body>
 </html>
+

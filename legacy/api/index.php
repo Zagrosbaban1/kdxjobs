@@ -47,9 +47,24 @@ try {
         default => json_response(['ok' => false, 'error' => 'Unknown API action.'], 404),
     };
 } catch (PDOException $exception) {
-    json_response(['ok' => false, 'error' => 'Database error: ' . $exception->getMessage()], 500);
+    error_log('Legacy API database error: ' . $exception->getMessage());
+    json_response(['ok' => false, 'error' => 'Database error. Please try again later.'], 500);
+} catch (RuntimeException $exception) {
+    json_response(['ok' => false, 'error' => $exception->getMessage()], 422);
 } catch (Throwable $exception) {
-    json_response(['ok' => false, 'error' => $exception->getMessage()], 500);
+    error_log('Legacy API error: ' . $exception->getMessage());
+    json_response(['ok' => false, 'error' => 'Server error. Please try again later.'], 500);
+}
+
+function validate_api_password_strength(string $password): void
+{
+    if (strlen($password) < 10) {
+        throw new RuntimeException('Password must be at least 10 characters.');
+    }
+
+    if (!preg_match('/[A-Z]/', $password) || !preg_match('/[a-z]/', $password) || !preg_match('/\d/', $password)) {
+        throw new RuntimeException('Password must include uppercase, lowercase, and number characters.');
+    }
 }
 
 function bootstrap(): never
@@ -99,6 +114,8 @@ function register_user(): never
     enforce_rate_limit('api_register', 5, 900, true);
     $data = array_merge(input(), $_POST);
     require_fields($data, ['role', 'email', 'password']);
+    $email = require_valid_email_address((string) $data['email']);
+    validate_api_password_strength((string) $data['password']);
 
     $role = in_array($data['role'], ['jobseeker', 'company'], true) ? $data['role'] : 'jobseeker';
     if ($role === 'jobseeker') {
@@ -114,6 +131,12 @@ function register_user(): never
     $logoFile = upload_file('logo_file', ['png', 'jpg', 'jpeg', 'webp']);
     $pdo = db();
 
+    $emailExists = $pdo->prepare('SELECT id FROM users WHERE email = :email LIMIT 1');
+    $emailExists->execute([':email' => $email]);
+    if ($emailExists->fetchColumn()) {
+        throw new RuntimeException('This email is already registered. Please login instead, or use a different email.');
+    }
+
     $stmt = $pdo->prepare(
         'INSERT INTO users (role, full_name, company_name, email, phone, password_hash, skills, industry, location, cv_file, logo_file)
          VALUES (:role, :full_name, :company_name, :email, :phone, :password_hash, :skills, :industry, :location, :cv_file, :logo_file)'
@@ -123,7 +146,7 @@ function register_user(): never
         ':role' => $role,
         ':full_name' => $data['full_name'] ?? null,
         ':company_name' => $data['company_name'] ?? null,
-        ':email' => $data['email'],
+        ':email' => $email,
         ':phone' => $data['phone'] ?? null,
         ':password_hash' => password_hash((string) $data['password'], PASSWORD_DEFAULT),
         ':skills' => is_array($data['skills'] ?? null) ? implode(', ', $data['skills']) : ($data['skills'] ?? null),
@@ -158,9 +181,10 @@ function login_user(): never
     enforce_rate_limit('api_login', 6, 300, true);
     $data = input();
     require_fields($data, ['email', 'password']);
+    $email = require_valid_email_address((string) $data['email']);
 
     $stmt = db()->prepare('SELECT * FROM users WHERE email = :email AND status = "active" LIMIT 1');
-    $stmt->execute([':email' => $data['email']]);
+    $stmt->execute([':email' => $email]);
     $user = $stmt->fetch();
 
     if (!$user || !password_verify((string) $data['password'], $user['password_hash'])) {
@@ -177,6 +201,7 @@ function apply_for_job(): never
     enforce_rate_limit('api_apply', 8, 600, true);
     $data = input();
     require_fields($data, ['job_id', 'applicant_name', 'applicant_email', 'role']);
+    $applicantEmail = require_valid_email_address((string) $data['applicant_email'], 'Please enter a valid applicant email.');
     $cvFile = upload_file('application_cv', ['pdf'], MAX_CV_UPLOAD_BYTES);
 
     $stmt = db()->prepare(
@@ -188,7 +213,7 @@ function apply_for_job(): never
         ':job_id' => (int) $data['job_id'],
         ':user_id' => null,
         ':applicant_name' => $data['applicant_name'],
-        ':applicant_email' => $data['applicant_email'],
+        ':applicant_email' => $applicantEmail,
         ':applicant_phone' => $data['applicant_phone'] ?? null,
         ':role' => $data['role'],
         ':cover_note' => $data['cover_note'] ?? null,

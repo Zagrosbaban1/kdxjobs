@@ -68,6 +68,9 @@ function apply_security_headers(bool $isApi = false): void
     header('Referrer-Policy: strict-origin-when-cross-origin');
     header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
     header('Cross-Origin-Resource-Policy: same-origin');
+    if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
+        header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
+    }
 
     if ($isApi) {
         header("Content-Security-Policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'");
@@ -86,6 +89,21 @@ function apply_security_headers(bool $isApi = false): void
         . "base-uri 'self'; "
         . "form-action 'self'"
     );
+}
+
+function normalize_email_address(string $email): string
+{
+    return strtolower(trim($email));
+}
+
+function require_valid_email_address(string $email, string $message = 'Please enter a valid email address.'): string
+{
+    $email = normalize_email_address($email);
+    if ($email === '' || strlen($email) > 180 || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        throw new RuntimeException($message);
+    }
+
+    return $email;
 }
 
 function db(): PDO
@@ -269,7 +287,7 @@ function upload_file(string $field, array $allowedExtensions, ?int $maxBytes = n
     ensure_upload_directory_security($uploadDir);
 
     $safePrefix = preg_replace('/[^a-z0-9_-]/i', '', $filenamePrefix) ?: 'upload_';
-    $filename = uniqid($safePrefix, true) . '.' . $extension;
+    $filename = $safePrefix . bin2hex(random_bytes(18)) . '.' . $extension;
     $target = $uploadDir . DIRECTORY_SEPARATOR . $filename;
 
     if (!move_uploaded_file($tmpName, $target)) {
@@ -277,6 +295,7 @@ function upload_file(string $field, array $allowedExtensions, ?int $maxBytes = n
             throw new RuntimeException('Could not save uploaded file.');
         }
     }
+    @chmod($target, 0640);
 
     return 'uploads/' . $filename;
 }

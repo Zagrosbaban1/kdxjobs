@@ -41,6 +41,24 @@
             navToggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
             navToggle.innerHTML = isOpen ? '&times;' : '&#9776;';
         });
+
+        nav.querySelectorAll('.nav-link').forEach((link) => {
+            link.addEventListener('click', () => {
+                nav.classList.remove('nav-open');
+                navToggle.setAttribute('aria-expanded', 'false');
+                navToggle.innerHTML = '&#9776;';
+            });
+        });
+
+        document.addEventListener('keydown', (event) => {
+            if (event.key !== 'Escape' || !nav.classList.contains('nav-open')) {
+                return;
+            }
+            nav.classList.remove('nav-open');
+            navToggle.setAttribute('aria-expanded', 'false');
+            navToggle.innerHTML = '&#9776;';
+            navToggle.focus();
+        });
     }
 
     themeButtons.forEach((button) => {
@@ -56,6 +74,75 @@
             }
         });
     });
+
+    const countUpValues = () => {
+        const values = document.querySelectorAll('.hero-panel .stat-value');
+        if (!values.length) {
+            return;
+        }
+
+        const formatNumber = (value) => new Intl.NumberFormat().format(Math.round(value));
+        values.forEach((value) => {
+            const target = Number((value.textContent || '').replace(/[^\d]/g, ''));
+            if (!Number.isFinite(target)) {
+                return;
+            }
+            value.dataset.countTarget = String(target);
+            value.textContent = '0';
+        });
+
+        const runCounter = (value, index = 0) => {
+            if (value.dataset.counted === 'true') {
+                return;
+            }
+
+            const target = Number(value.dataset.countTarget || '0');
+            if (!Number.isFinite(target)) {
+                return;
+            }
+
+            value.dataset.counted = 'true';
+            window.setTimeout(() => {
+                value.classList.add('is-counting');
+                const duration = 1350;
+                const start = performance.now();
+
+                const tick = (now) => {
+                    const progress = Math.min((now - start) / duration, 1);
+                    const eased = 1 - Math.pow(1 - progress, 4);
+                    value.textContent = formatNumber(target * eased);
+                    if (progress < 1) {
+                        window.requestAnimationFrame(tick);
+                        return;
+                    }
+                    value.textContent = formatNumber(target);
+                    value.classList.remove('is-counting');
+                    value.classList.add('counted');
+                };
+
+                window.requestAnimationFrame(tick);
+            }, 220 + (index * 180));
+        };
+
+        if (!('IntersectionObserver' in window)) {
+            values.forEach(runCounter);
+            return;
+        }
+
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach((entry) => {
+                if (!entry.isIntersecting) {
+                    return;
+                }
+                entry.target.querySelectorAll('.stat-value').forEach(runCounter);
+                observer.unobserve(entry.target);
+            });
+        }, { threshold: 0.2 });
+
+        document.querySelectorAll('.hero-panel').forEach((panel) => observer.observe(panel));
+    };
+
+    countUpValues();
 
     document.querySelectorAll('form[data-confirm]').forEach((form) => {
         form.addEventListener('submit', (event) => {
@@ -411,8 +498,16 @@
         });
     };
 
-    initRichTextEditors();
-    initQuillEditors();
+    const initEditorWork = () => {
+        initRichTextEditors();
+        initQuillEditors();
+    };
+
+    if ('requestIdleCallback' in window) {
+        window.requestIdleCallback(initEditorWork, { timeout: 900 });
+    } else {
+        window.setTimeout(initEditorWork, 1);
+    }
 
     document.querySelectorAll('form').forEach((form) => {
         const select = form.querySelector('[data-cv-option]');
@@ -468,7 +563,7 @@
         const storageKey = 'kdxjobs-latest-notification-id';
         const previousNotificationId = Number(localStorage.getItem(storageKey) || '0');
 
-        if (latestNotificationId > 0 && previousNotificationId > 0 && latestNotificationId > previousNotificationId) {
+        if (latestNotificationId > 0 && previousNotificationId > 0 && latestNotificationId > previousNotificationId && !document.hidden) {
             playKdxSound();
         }
         if (latestNotificationId > 0) {
@@ -484,6 +579,10 @@
         }
 
         const previousLatest = Number(chat.dataset.latestMessageId || '0');
+        if (document.hidden) {
+            return;
+        }
+
         try {
             const response = await fetch('index.php?ajax=service_chat&application_id=' + encodeURIComponent(applicationId) + '&latest=' + previousLatest, {
                 headers: { 'X-Requested-With': 'fetch' }
@@ -556,6 +655,6 @@
             });
         }
 
-        window.setInterval(() => refreshServiceChat(chat), 3000);
+        window.setInterval(() => refreshServiceChat(chat), 5000);
     });
 }());
