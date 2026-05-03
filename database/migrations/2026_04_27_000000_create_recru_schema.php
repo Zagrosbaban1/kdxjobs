@@ -34,6 +34,8 @@ return new class extends Migration
             $table->string('location', 180)->default('Remote');
             $table->string('logo_file', 255)->nullable();
             $table->text('description')->nullable();
+            $table->enum('verification_status', ['pending', 'verified', 'rejected'])->default('verified');
+            $table->timestamp('verified_at')->nullable();
             $table->timestamp('created_at')->useCurrent();
         });
 
@@ -128,6 +130,7 @@ return new class extends Migration
             $table->string('cover_image')->nullable();
             $table->string('category', 80)->nullable();
             $table->enum('status', ['draft', 'published'])->default('published');
+            $table->boolean('is_featured')->default(false);
             $table->timestamp('created_at')->useCurrent();
         });
     }

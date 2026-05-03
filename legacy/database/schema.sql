@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS companies (
   location VARCHAR(180) NOT NULL DEFAULT 'Remote',
   logo_file VARCHAR(255) NULL,
   description TEXT NULL,
+  verification_status ENUM('pending', 'verified', 'rejected') NOT NULL DEFAULT 'verified',
+  verified_at TIMESTAMP NULL DEFAULT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 );
@@ -163,6 +165,7 @@ CREATE TABLE IF NOT EXISTS blog_posts (
   cover_image VARCHAR(255) NULL,
   category VARCHAR(80) NULL,
   status ENUM('draft', 'published') NOT NULL DEFAULT 'published',
+  is_featured TINYINT(1) NOT NULL DEFAULT 0,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE SET NULL
 );

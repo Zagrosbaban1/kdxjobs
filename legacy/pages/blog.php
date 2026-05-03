@@ -60,7 +60,10 @@ foreach ($publishedPosts as $post) {
                             </div>
                         <?php endif; ?>
                         <div class="blog-list-body">
-                            <span class="badge"><?= h($post['category'] ?: 'Career Advice') ?></span>
+                            <div class="blog-card-badges">
+                                <?php if (!empty($post['is_featured'])): ?><span class="badge featured">Featured</span><?php endif; ?>
+                                <span class="badge"><?= h($post['category'] ?: 'Career Advice') ?></span>
+                            </div>
                             <h3><?= h($post['title']) ?></h3>
                             <p class="muted"><?= h($post['excerpt'] ?: substr(strip_tags((string) $post['content']), 0, 150) . '...') ?></p>
                             <p class="tiny muted">By <?= h($post['author_name'] ?: 'KDXJOBS Team') ?> - <?= h(date('M j, Y', strtotime((string) $post['created_at']))) ?></p>
@@ -73,4 +76,3 @@ foreach ($publishedPosts as $post) {
     </div>
 </section>
 <?php endif; ?>
-

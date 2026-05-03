@@ -86,6 +86,15 @@ class DashboardController extends Controller
             ? Company::query()->where('user_id', $user->id)->value('id')
             : (int) $data['company_id'];
 
+        if ($user->role === 'company') {
+            $isVerified = Company::query()
+                ->where('id', $companyId)
+                ->where('verification_status', 'verified')
+                ->exists();
+
+            abort_unless($isVerified, 403, 'Your company must be verified before posting jobs.');
+        }
+
         $job = Job::query()->create([
             'company_id' => $companyId,
             'recruiter_id' => in_array($user->role, ['admin', 'superadmin'], true) ? $user->id : null,

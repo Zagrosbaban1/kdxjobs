@@ -17,12 +17,15 @@ class Company extends Model
         'location',
         'logo_file',
         'description',
+        'verification_status',
+        'verified_at',
     ];
 
     protected function casts(): array
     {
         return [
             'created_at' => 'datetime',
+            'verified_at' => 'datetime',
         ];
     }
 

@@ -88,6 +88,7 @@ class AuthController extends Controller
                     'name' => $data['company_name'],
                     'industry' => $data['industry'],
                     'location' => $data['location'],
+                    'verification_status' => 'pending',
                 ]);
             }
 

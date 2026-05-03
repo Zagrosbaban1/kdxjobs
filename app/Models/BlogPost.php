@@ -14,14 +14,17 @@ class BlogPost extends Model
         'title',
         'excerpt',
         'content',
+        'cover_image',
         'category',
         'status',
+        'is_featured',
     ];
 
     protected function casts(): array
     {
         return [
             'created_at' => 'datetime',
+            'is_featured' => 'boolean',
         ];
     }
 

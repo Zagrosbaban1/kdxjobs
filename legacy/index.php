@@ -917,8 +917,11 @@ try {
     $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS cv_ai_json JSON NULL AFTER cv_ai_summary");
     $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS cv_ai_updated_at TIMESTAMP NULL DEFAULT NULL AFTER cv_ai_summary");
     $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_photo VARCHAR(255) NULL AFTER logo_file");
+    $pdo->exec("ALTER TABLE companies ADD COLUMN IF NOT EXISTS verification_status ENUM('pending', 'verified', 'rejected') NOT NULL DEFAULT 'verified' AFTER description");
+    $pdo->exec("ALTER TABLE companies ADD COLUMN IF NOT EXISTS verified_at TIMESTAMP NULL DEFAULT NULL AFTER verification_status");
     $pdo->exec("ALTER TABLE blog_posts MODIFY content MEDIUMTEXT NOT NULL");
     $pdo->exec("ALTER TABLE blog_posts ADD COLUMN IF NOT EXISTS cover_image VARCHAR(255) NULL AFTER content");
+    $pdo->exec("ALTER TABLE blog_posts ADD COLUMN IF NOT EXISTS is_featured TINYINT(1) NOT NULL DEFAULT 0 AFTER status");
     $pdo->exec("ALTER TABLE applications ADD COLUMN IF NOT EXISTS cv_ai_skills TEXT NULL AFTER cv_file");
     $pdo->exec("ALTER TABLE applications ADD COLUMN IF NOT EXISTS cv_ai_years INT NULL AFTER cv_ai_skills");
     $pdo->exec("ALTER TABLE applications ADD COLUMN IF NOT EXISTS cv_ai_summary TEXT NULL AFTER cv_ai_years");
@@ -1125,7 +1128,7 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
             ]);
 
             if ($role === 'company') {
-                $company = $pdo->prepare('INSERT INTO companies (user_id, name, industry, location) VALUES (:user_id, :name, :industry, :location)');
+                $company = $pdo->prepare('INSERT INTO companies (user_id, name, industry, location, verification_status) VALUES (:user_id, :name, :industry, :location, "pending")');
                 $company->execute([
                     ':user_id' => (int) $pdo->lastInsertId(),
                     ':name' => field('company_name'),
@@ -1355,11 +1358,15 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             $companyId = (int) field('company_id');
             if (current_role() === 'company') {
-                $companyStmt = $pdo->prepare('SELECT id FROM companies WHERE user_id = :user_id LIMIT 1');
+                $companyStmt = $pdo->prepare('SELECT id, verification_status FROM companies WHERE user_id = :user_id LIMIT 1');
                 $companyStmt->execute([':user_id' => (int) $_SESSION['user']['id']]);
-                $ownedCompanyId = (int) ($companyStmt->fetchColumn() ?: 0);
+                $ownedCompany = $companyStmt->fetch();
+                $ownedCompanyId = (int) ($ownedCompany['id'] ?? 0);
                 if ($ownedCompanyId <= 0) {
                     throw new RuntimeException('No company profile is linked to this account.');
+                }
+                if (($ownedCompany['verification_status'] ?? 'pending') !== 'verified') {
+                    throw new RuntimeException('Your company must be verified by the super admin before you can post jobs.');
                 }
                 $companyId = $ownedCompanyId;
             }
@@ -1846,6 +1853,29 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
             go('admin', 'User status updated.', ['tab' => 'manage']);
         }
 
+        if ($action === 'verify_company') {
+            if (!is_super_admin()) {
+                throw new RuntimeException('Only the super admin can verify companies.');
+            }
+            need(['company_id', 'verification_status']);
+            $verificationStatus = field('verification_status');
+            if (!in_array($verificationStatus, ['pending', 'verified', 'rejected'], true)) {
+                throw new RuntimeException('Invalid company verification status.');
+            }
+            $stmt = $pdo->prepare(
+                'UPDATE companies
+                 SET verification_status = :verification_status,
+                     verified_at = CASE WHEN :verified_check = "verified" THEN NOW() ELSE NULL END
+                 WHERE id = :id'
+            );
+            $stmt->execute([
+                ':verification_status' => $verificationStatus,
+                ':verified_check' => $verificationStatus,
+                ':id' => (int) field('company_id'),
+            ]);
+            go('admin', 'Company verification updated.', ['tab' => 'manage']);
+        }
+
         if ($action === 'create_admin') {
             if (!is_super_admin()) {
                 throw new RuntimeException('Only the super admin can create admins.');
@@ -1888,9 +1918,10 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             need(['title', 'content']);
             $coverImage = upload_file('cover_image', ['png', 'jpg', 'jpeg', 'webp'], 4 * 1024 * 1024);
+            $isFeatured = field('is_featured') === '1' ? 1 : 0;
             $stmt = $pdo->prepare(
-                'INSERT INTO blog_posts (author_id, title, excerpt, content, cover_image, category, status)
-                 VALUES (:author_id, :title, :excerpt, :content, :cover_image, :category, :status)'
+                'INSERT INTO blog_posts (author_id, title, excerpt, content, cover_image, category, status, is_featured)
+                 VALUES (:author_id, :title, :excerpt, :content, :cover_image, :category, :status, :is_featured)'
             );
             $stmt->execute([
                 ':author_id' => (int) ($_SESSION['user']['id'] ?? 0) ?: null,
@@ -1900,6 +1931,7 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':cover_image' => $coverImage,
                 ':category' => field('category', 'Career Advice') ?: 'Career Advice',
                 ':status' => field('status') === 'draft' ? 'draft' : 'published',
+                ':is_featured' => $isFeatured,
             ]);
             go('admin', 'Blog post saved.', ['tab' => 'blog']);
         }
@@ -1910,6 +1942,7 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             need(['blog_post_id', 'title', 'content']);
             $coverImage = upload_file('cover_image', ['png', 'jpg', 'jpeg', 'webp'], 4 * 1024 * 1024);
+            $isFeatured = field('is_featured') === '1' ? 1 : 0;
             $stmt = $pdo->prepare(
                 'UPDATE blog_posts
                  SET title = :title,
@@ -1917,7 +1950,8 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
                      content = :content,
                      cover_image = COALESCE(:cover_image, cover_image),
                      category = :category,
-                     status = :status
+                     status = :status,
+                     is_featured = :is_featured
                  WHERE id = :id'
             );
             $stmt->execute([
@@ -1928,6 +1962,7 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':cover_image' => $coverImage,
                 ':category' => field('category', 'Career Advice') ?: 'Career Advice',
                 ':status' => field('status') === 'draft' ? 'draft' : 'published',
+                ':is_featured' => $isFeatured,
             ]);
             go('admin', 'Blog post updated.', ['tab' => 'blog']);
         }
@@ -2114,8 +2149,9 @@ if ($pdo) {
     });
 
     $companies = $pdo->query(
-        "SELECT c.*, COUNT(j.id) AS jobs
+        "SELECT c.*, owner.email AS owner_email, owner.status AS owner_status, COUNT(j.id) AS jobs
          FROM companies c
+         LEFT JOIN users owner ON owner.id = c.user_id
          LEFT JOIN jobs j ON j.company_id = c.id AND j.status = 'active'
          GROUP BY c.id
          ORDER BY c.name"
@@ -2148,7 +2184,7 @@ if ($pdo) {
         "SELECT p.*, u.full_name AS author_name
          FROM blog_posts p
          LEFT JOIN users u ON u.id = p.author_id
-         ORDER BY p.created_at DESC"
+         ORDER BY p.is_featured DESC, p.created_at DESC"
     )->fetchAll();
 
     if (isset($_SESSION['user']['id']) && ($_SESSION['user']['role'] ?? '') === 'jobseeker') {
@@ -6446,6 +6482,8 @@ $userEmail = (string) ($user['email'] ?? '');
 $userApplications = $userEmail !== '' ? array_values(array_filter($applicants, static fn(array $a): bool => $a['applicant_email'] === $userEmail)) : [];
 $companyName = (string) ($company['name'] ?? '');
 $companyId = (int) ($company['id'] ?? 0);
+$companyVerificationStatus = (string) ($company['verification_status'] ?? 'verified');
+$companyCanPostJobs = !$isCompany || $companyVerificationStatus === 'verified';
 $companyJobs = $companyId > 0 ? array_values(array_filter($jobs, static fn(array $job): bool => (int) ($job['company_id'] ?? 0) === $companyId)) : [];
 $companyApplications = $companyId > 0 ? array_values(array_filter($applicants, static fn(array $a): bool => (int) ($a['company_id'] ?? 0) === $companyId)) : [];
 $recruiterJobs = is_admin_role() && !is_super_admin()
@@ -6593,6 +6631,9 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                                             <strong><?= h($nextApplication['job_title'] ?? 'Latest application') ?></strong>
                                             <span class="tiny muted"><?= h($nextApplication['company'] ?? '') ?></span>
                                             <?= progress_html((string) ($nextApplication['status'] ?? 'New')) ?>
+                                            <div class="mini-timeline">
+                                                <?= timeline_html((int) ($nextApplication['id'] ?? 0), $applicationEventsByApplication, $interviewsByApplication) ?>
+                                            </div>
                                         </div>
                                     <?php else: ?>
                                         <p class="tiny muted">No applications yet. Apply for a role and its progress will appear here.</p>
@@ -6975,7 +7016,10 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                             <h3><?= $isCompany ? 'Post a Company Job' : 'Post Job as Recruiter' ?></h3>
                             <?php if ($isCompany): ?>
                                 <input type="hidden" name="company_id" value="<?= h((string) $companyId) ?>">
-                                <div class="profile-box"><strong>Posting as <?= h($company['name'] ?? 'Your Company') ?></strong><p class="tiny muted">This job will be related only to your company.</p></div>
+                                <div class="profile-box"><strong>Posting as <?= h($company['name'] ?? 'Your Company') ?></strong><p class="tiny muted">Verification: <?= h(ucfirst($companyVerificationStatus)) ?>. <?= $companyCanPostJobs ? 'This job will be related only to your company.' : 'Super admin approval is required before posting jobs.' ?></p></div>
+                                <?php if (!$companyCanPostJobs): ?>
+                                    <div class="alert bad" style="margin:0">Your company is <?= h($companyVerificationStatus) ?>. You can complete your profile, but job posting is locked until super admin approval.</div>
+                                <?php endif; ?>
                             <?php else: ?>
                                 <label class="label">Company<select class="select" name="company_id"><?php foreach ($companies as $c): ?><option value="<?= h((string)$c['id']) ?>"><?= h($c['name']) ?></option><?php endforeach; ?></select></label>
                                 <div class="profile-box"><strong>Assigned to <?= h($user['full_name'] ?? 'this recruiter') ?></strong><p class="tiny muted">Applications for this job will appear only in this recruiter's dashboard. Super admin can see all.</p></div>
@@ -7003,7 +7047,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                             <label class="label">Application Deadline<input class="input" type="date" name="expires_at"></label>
                             <label class="label">Tags<input class="input" name="tags" placeholder="React, API, SQL"></label>
                             <?php if ($error): ?><div class="alert bad" style="margin:0"><?= h($error) ?></div><?php endif; ?>
-                            <button class="btn"><?= $isCompany ? 'Post Company Job' : 'Post Assigned Job' ?></button>
+                            <button class="btn" <?= !$companyCanPostJobs ? 'disabled' : '' ?>><?= $isCompany ? 'Post Company Job' : 'Post Assigned Job' ?></button>
                         </form>
                     <?php elseif ($tab === 'manage' && $isCompany): ?>
                         <div class="manage-overview">
@@ -7067,7 +7111,8 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                                 <input type="hidden" name="action" value="post_job">
                                 <?php if ($isCompany): ?>
                                     <input type="hidden" name="company_id" value="<?= h((string) $companyId) ?>">
-                                    <div class="profile-box"><strong>Posting as <?= h($company['name'] ?? 'Your Company') ?></strong><p class="tiny muted">This job will be related only to your company.</p></div>
+                                    <div class="profile-box"><strong>Posting as <?= h($company['name'] ?? 'Your Company') ?></strong><p class="tiny muted">Verification: <?= h(ucfirst($companyVerificationStatus)) ?>. <?= $companyCanPostJobs ? 'This job will be related only to your company.' : 'Super admin approval is required before posting jobs.' ?></p></div>
+                                    <?php if (!$companyCanPostJobs): ?><div class="alert bad" style="margin:0">Job posting is locked until super admin approval.</div><?php endif; ?>
                                 <?php else: ?>
                                     <label class="label">Company<select class="select" name="company_id"><?php foreach ($companies as $c): ?><option value="<?= h((string)$c['id']) ?>"><?= h($c['name']) ?></option><?php endforeach; ?></select></label>
                                     <div class="profile-box"><strong>Recruiter Assignment</strong><p class="tiny muted">Applications for this job will be supervised by <?= h($user['full_name'] ?? 'this recruiter') ?>.</p></div>
@@ -7094,7 +7139,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                                 <input type="hidden" name="requirements" value="">
                                 <label class="label">Application Deadline<input class="input" type="date" name="expires_at"></label>
                                 <label class="label">Tags<input class="input" name="tags" placeholder="React, API, SQL"></label>
-                                <button class="btn">Post Job</button>
+                                <button class="btn" <?= !$companyCanPostJobs ? 'disabled' : '' ?>>Post Job</button>
                             </form>
                         </div>
                     <?php elseif ($tab === 'manage' && is_admin_role()): ?>
@@ -7198,6 +7243,40 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                             <div class="profile-box"><div style="font-size:22px">🛡️</div><strong><?= h($x) ?></strong><p class="tiny muted"><?= h($v) ?> records</p></div>
                             <?php endforeach; ?>
                         </div>
+                        <?php if (is_super_admin()): ?>
+                            <section class="manage-verification">
+                                <div class="overview-panel-head">
+                                    <div>
+                                        <h3>Company Verification</h3>
+                                        <p class="tiny muted">New company accounts stay pending until the super admin approves them. Pending or rejected companies cannot post jobs.</p>
+                                    </div>
+                                </div>
+                                <div class="verification-grid">
+                                    <?php foreach ($companies as $companyItem): ?>
+                                        <?php $companyVerification = (string) ($companyItem['verification_status'] ?? 'verified'); ?>
+                                        <article class="verification-card">
+                                            <div>
+                                                <strong><?= h($companyItem['name']) ?></strong>
+                                                <span><?= h(($companyItem['industry'] ?: 'Industry') . ' - ' . ($companyItem['location'] ?: 'Location')) ?></span>
+                                                <span><?= h($companyItem['owner_email'] ?: 'No owner email') ?> - <?= h((string) $companyItem['jobs']) ?> active jobs</span>
+                                            </div>
+                                            <span class="verification-pill <?= h($companyVerification) ?>"><?= h(ucfirst($companyVerification)) ?></span>
+                                            <form method="post" class="verification-actions">
+                                                <?= csrf_input() ?>
+                                                <input type="hidden" name="action" value="verify_company">
+                                                <input type="hidden" name="company_id" value="<?= h((string) $companyItem['id']) ?>">
+                                                <button class="btn outline" name="verification_status" value="pending">Pending</button>
+                                                <button class="btn green" name="verification_status" value="verified">Verify</button>
+                                                <button class="btn red" name="verification_status" value="rejected">Reject</button>
+                                            </form>
+                                        </article>
+                                    <?php endforeach; ?>
+                                    <?php if (!$companies): ?>
+                                        <div class="profile-box"><strong>No companies yet.</strong><p class="tiny muted">Company registrations will appear here for approval.</p></div>
+                                    <?php endif; ?>
+                                </div>
+                            </section>
+                        <?php endif; ?>
                         <div class="grid hidden">
                             <?php foreach ($users as $managedUser): ?>
                             <div class="applicant application-card">
@@ -7501,6 +7580,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                                     </div>
                                 </label>
                                 <label class="label">Status<select class="select" name="status"><option value="published" <?= (($editingBlogPost['status'] ?? 'published') === 'published') ? 'selected' : '' ?>>Published</option><option value="draft" <?= (($editingBlogPost['status'] ?? '') === 'draft') ? 'selected' : '' ?>>Draft</option></select></label>
+                                <label class="check-option"><input type="checkbox" name="is_featured" value="1" <?= !empty($editingBlogPost['is_featured']) ? 'checked' : '' ?>> <span>Feature this post on the Blog page</span></label>
                                 <div class="actions">
                                     <button class="btn"><?= $editingBlogPost ? 'Update Blog Post' : 'Save Blog Post' ?></button>
                                     <?php if ($editingBlogPost): ?><a class="btn outline" href="<?= h(app_url('admin', ['tab' => 'blog'])) ?>">Cancel Edit</a><?php endif; ?>
@@ -7518,7 +7598,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                                         <?php endif; ?>
                                         <div>
                                             <strong><?= h($post['title']) ?></strong><br>
-                                            <span class="tiny muted"><?= h($post['category'] ?: 'Career Advice') ?> - <?= h($post['status']) ?> - <?= h(date('M j, Y', strtotime((string) $post['created_at']))) ?></span>
+                                            <span class="tiny muted"><?= !empty($post['is_featured']) ? 'Featured - ' : '' ?><?= h($post['category'] ?: 'Career Advice') ?> - <?= h($post['status']) ?> - <?= h(date('M j, Y', strtotime((string) $post['created_at']))) ?></span>
                                         </div>
                                         <div class="blog-post-actions">
                                             <a class="btn outline" href="<?= h(app_url('admin', ['tab' => 'blog', 'edit_post' => $post['id']])) ?>">Edit</a>
