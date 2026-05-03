@@ -2266,6 +2266,73 @@ if ($pdo) {
         array_keys($matchBuckets),
         array_values($matchBuckets)
     );
+    if (is_super_admin()) {
+        $analytics['users_by_role'] = $pdo->query('SELECT role, COUNT(*) AS total FROM users GROUP BY role ORDER BY total DESC')->fetchAll();
+        $analytics['users_by_status'] = $pdo->query('SELECT status, COUNT(*) AS total FROM users GROUP BY status ORDER BY total DESC')->fetchAll();
+        $analytics['companies_by_industry'] = $pdo->query(
+        "SELECT COALESCE(NULLIF(industry, ''), 'Unspecified') AS label, COUNT(*) AS total
+         FROM companies
+         GROUP BY COALESCE(NULLIF(industry, ''), 'Unspecified')
+         ORDER BY total DESC
+         LIMIT 8"
+        )->fetchAll();
+        $analytics['companies_by_location'] = $pdo->query(
+        "SELECT COALESCE(NULLIF(location, ''), 'Unspecified') AS label, COUNT(*) AS total
+         FROM companies
+         GROUP BY COALESCE(NULLIF(location, ''), 'Unspecified')
+         ORDER BY total DESC
+         LIMIT 8"
+        )->fetchAll();
+        $analytics['applications_by_company'] = $pdo->query(
+        "SELECT COALESCE(c.name, 'Unassigned') AS label, COUNT(a.id) AS total
+         FROM applications a
+         LEFT JOIN jobs j ON j.id = a.job_id
+         LEFT JOIN companies c ON c.id = j.company_id
+         GROUP BY COALESCE(c.name, 'Unassigned')
+         ORDER BY total DESC
+         LIMIT 8"
+        )->fetchAll();
+        $analytics['applications_by_job'] = $pdo->query(
+        "SELECT COALESCE(j.title, 'Unknown job') AS label, COUNT(a.id) AS total
+         FROM applications a
+         LEFT JOIN jobs j ON j.id = a.job_id
+         GROUP BY COALESCE(j.title, 'Unknown job')
+         ORDER BY total DESC
+         LIMIT 8"
+        )->fetchAll();
+        $analytics['customer_activity'] = $pdo->query(
+        "SELECT COALESCE(NULLIF(u.full_name, ''), u.email) AS customer, u.email, u.status, COUNT(a.id) AS applications
+         FROM users u
+         LEFT JOIN applications a ON a.user_id = u.id OR LOWER(a.applicant_email) = LOWER(u.email)
+         WHERE u.role = 'jobseeker'
+         GROUP BY u.id, u.full_name, u.email, u.status, u.created_at
+         ORDER BY applications DESC, u.created_at DESC
+         LIMIT 8"
+        )->fetchAll();
+        $analytics['company_health'] = $pdo->query(
+        "SELECT c.name AS company, c.industry, c.location, COUNT(DISTINCT j.id) AS jobs,
+                COALESCE(SUM(CASE WHEN j.status = 'active' THEN 1 ELSE 0 END), 0) AS active_jobs,
+                COUNT(a.id) AS applications
+         FROM companies c
+         LEFT JOIN jobs j ON j.company_id = c.id
+         LEFT JOIN applications a ON a.job_id = j.id
+         GROUP BY c.id, c.name, c.industry, c.location
+         ORDER BY applications DESC, active_jobs DESC, c.created_at DESC
+         LIMIT 8"
+        )->fetchAll();
+        $analytics['recent_users'] = $pdo->query('SELECT full_name, company_name, email, role, status, created_at FROM users ORDER BY created_at DESC LIMIT 8')->fetchAll();
+        $analytics['recent_companies'] = $pdo->query('SELECT name, industry, location, created_at FROM companies ORDER BY created_at DESC LIMIT 8')->fetchAll();
+        $analytics['recent_applications'] = $pdo->query(
+        "SELECT a.applicant_name, a.applicant_email, a.status, a.created_at, j.title AS job_title, c.name AS company
+         FROM applications a
+         LEFT JOIN jobs j ON j.id = a.job_id
+         LEFT JOIN companies c ON c.id = j.company_id
+         ORDER BY a.created_at DESC
+         LIMIT 8"
+        )->fetchAll();
+        $analytics['unread_messages'] = (int) $pdo->query('SELECT COUNT(*) FROM contact_messages WHERE is_read = 0')->fetchColumn();
+        $analytics['recent_messages'] = $pdo->query('SELECT full_name, email, subject, is_read, created_at FROM contact_messages ORDER BY created_at DESC LIMIT 6')->fetchAll();
+    }
 
     $stats = [
         'openJobs' => number_format((int) $pdo->query("SELECT COUNT(*) FROM jobs WHERE status = 'active' AND (expires_at IS NULL OR expires_at >= CURDATE())")->fetchColumn()),
@@ -7206,67 +7273,192 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                             </div>
                         </div>
                     <?php elseif ($tab === 'statistics'): ?>
-                        <div class="grid grid3">
-                            <div class="profile-box"><strong>Total Users</strong><p class="stat-value"><?= h($stats['users']) ?></p></div>
-                            <div class="profile-box"><strong>Companies</strong><p class="stat-value"><?= h($stats['companies']) ?></p></div>
-                            <div class="profile-box"><strong>Applications</strong><p class="stat-value"><?= h($stats['applications']) ?></p></div>
-                            <div class="profile-box"><strong>Open Jobs</strong><p class="stat-value"><?= h($stats['openJobs']) ?></p></div>
-                            <div class="profile-box"><strong>Accepted</strong><p class="stat-value"><?= h((string) count(array_filter($applicants, fn($a) => $a['status'] === 'Accepted'))) ?></p></div>
-                            <div class="profile-box"><strong>Rejected</strong><p class="stat-value"><?= h((string) count(array_filter($applicants, fn($a) => $a['status'] === 'Rejected'))) ?></p></div>
-                        </div>
-                        <div class="grid grid3" style="margin-top:24px">
-                            <div class="profile-box">
-                                <h3>Application Status</h3>
-                                <?php $maxStatus = max(1, ...array_map(static fn($row): int => (int) $row['total'], $analytics['statuses'] ?? [])); ?>
-                                <?php foreach (($analytics['statuses'] ?? []) as $row): ?>
-                                    <p class="tiny muted" style="margin:14px 0 0"><?= h($row['status']) ?> - <?= h((string) $row['total']) ?></p>
-                                    <div class="analytics-bar"><span style="width:<?= h((string) min(100, ((int) $row['total'] / $maxStatus) * 100)) ?>%"></span></div>
-                                <?php endforeach; ?>
+                        <?php if (is_super_admin()): ?>
+                            <?php
+                            $acceptedCount = count(array_filter($applicants, static fn($a): bool => ($a['status'] ?? '') === 'Accepted'));
+                            $rejectedCount = count(array_filter($applicants, static fn($a): bool => ($a['status'] ?? '') === 'Rejected'));
+                            $shortlistedCount = count(array_filter($applicants, static fn($a): bool => ($a['status'] ?? '') === 'Shortlisted'));
+                            ?>
+                            <div class="super-analytics">
+                                <div class="analytics-hero-card">
+                                    <div>
+                                        <p class="eyebrow">Super Admin Analytics</p>
+                                        <h3>Complete platform overview</h3>
+                                        <p class="muted">Customers, companies, jobs, applications, AI screening, and contact activity in one clean dashboard.</p>
+                                    </div>
+                                    <div class="analytics-alert">
+                                        <strong><?= h((string) ($analytics['unread_messages'] ?? 0)) ?></strong>
+                                        <span>Unread contact messages</span>
+                                    </div>
+                                </div>
+                                <div class="analytics-kpis">
+                                    <?php foreach ([
+                                        ['Total Users', $stats['users'], 'All platform accounts'],
+                                        ['Job Seekers', $stats['jobSeekers'], 'Customer accounts'],
+                                        ['Companies', $stats['companies'], 'Employer profiles'],
+                                        ['Open Jobs', $stats['openJobs'], 'Visible active jobs'],
+                                        ['Applications', $stats['applications'], 'Total candidate activity'],
+                                        ['Shortlisted', (string) $shortlistedCount, 'Moved forward'],
+                                        ['Accepted', (string) $acceptedCount, 'Successful outcomes'],
+                                        ['Rejected', (string) $rejectedCount, 'Closed negative outcomes'],
+                                    ] as [$label, $value, $note]): ?>
+                                        <div class="analytics-kpi">
+                                            <span><?= h($label) ?></span>
+                                            <strong><?= h((string) $value) ?></strong>
+                                            <small><?= h($note) ?></small>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                                <div class="analytics-grid analytics-grid-3">
+                                    <?php foreach ([
+                                        ['Users by Role', $analytics['users_by_role'] ?? [], 'role'],
+                                        ['Users by Status', $analytics['users_by_status'] ?? [], 'status'],
+                                        ['Applications by Status', $analytics['statuses'] ?? [], 'status'],
+                                    ] as [$title, $rows, $key]): ?>
+                                        <div class="analytics-card">
+                                            <h3><?= h($title) ?></h3>
+                                            <?php $maxRows = max(1, ...array_map(static fn($row): int => (int) $row['total'], $rows)); ?>
+                                            <?php if (!$rows): ?><p class="tiny muted">No data yet.</p><?php endif; ?>
+                                            <?php foreach ($rows as $row): ?>
+                                                <div class="analytics-line">
+                                                    <span><?= h(ucfirst((string) ($row[$key] ?? 'Unknown'))) ?></span>
+                                                    <strong><?= h((string) $row['total']) ?></strong>
+                                                </div>
+                                                <div class="analytics-bar"><span style="width:<?= h((string) min(100, ((int) $row['total'] / $maxRows) * 100)) ?>%"></span></div>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                                <div class="analytics-grid analytics-grid-2">
+                                    <?php foreach ([
+                                        ['Company Industries', $analytics['companies_by_industry'] ?? []],
+                                        ['Company Locations', $analytics['companies_by_location'] ?? []],
+                                        ['Applications by Company', $analytics['applications_by_company'] ?? []],
+                                        ['Applications by Job', $analytics['applications_by_job'] ?? []],
+                                    ] as [$title, $rows]): ?>
+                                        <div class="analytics-card">
+                                            <h3><?= h($title) ?></h3>
+                                            <?php $maxRows = max(1, ...array_map(static fn($row): int => (int) $row['total'], $rows)); ?>
+                                            <?php if (!$rows): ?><p class="tiny muted">No data yet.</p><?php endif; ?>
+                                            <?php foreach ($rows as $row): ?>
+                                                <div class="analytics-line">
+                                                    <span><?= h((string) ($row['label'] ?? 'Unknown')) ?></span>
+                                                    <strong><?= h((string) $row['total']) ?></strong>
+                                                </div>
+                                                <div class="analytics-bar"><span style="width:<?= h((string) min(100, ((int) $row['total'] / $maxRows) * 100)) ?>%"></span></div>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                                <div class="analytics-grid analytics-grid-2">
+                                    <div class="analytics-card">
+                                        <h3>Company Health</h3>
+                                        <div class="analytics-table">
+                                            <?php foreach (($analytics['company_health'] ?? []) as $row): ?>
+                                                <div class="analytics-table-row">
+                                                    <div><strong><?= h($row['company']) ?></strong><span><?= h(($row['industry'] ?: 'Industry') . ' - ' . ($row['location'] ?: 'Location')) ?></span></div>
+                                                    <div><strong><?= h((string) $row['active_jobs']) ?></strong><span>active jobs</span></div>
+                                                    <div><strong><?= h((string) $row['applications']) ?></strong><span>applications</span></div>
+                                                </div>
+                                            <?php endforeach; ?>
+                                            <?php if (empty($analytics['company_health'])): ?><p class="tiny muted">No company activity yet.</p><?php endif; ?>
+                                        </div>
+                                    </div>
+                                    <div class="analytics-card">
+                                        <h3>Customer Activity</h3>
+                                        <div class="analytics-table">
+                                            <?php foreach (($analytics['customer_activity'] ?? []) as $row): ?>
+                                                <div class="analytics-table-row">
+                                                    <div><strong><?= h($row['customer']) ?></strong><span><?= h($row['email']) ?></span></div>
+                                                    <div><strong><?= h((string) $row['applications']) ?></strong><span>applications</span></div>
+                                                    <div><strong><?= h(ucfirst((string) $row['status'])) ?></strong><span>status</span></div>
+                                                </div>
+                                            <?php endforeach; ?>
+                                            <?php if (empty($analytics['customer_activity'])): ?><p class="tiny muted">No customer activity yet.</p><?php endif; ?>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="analytics-grid analytics-grid-3">
+                                    <div class="analytics-card">
+                                        <h3>Recent Users</h3>
+                                        <?php foreach (($analytics['recent_users'] ?? []) as $row): ?>
+                                            <div class="analytics-feed-item"><strong><?= h($row['full_name'] ?: ($row['company_name'] ?: $row['email'])) ?></strong><span><?= h($row['role']) ?> - <?= h(date('M j, Y', strtotime((string) $row['created_at']))) ?></span></div>
+                                        <?php endforeach; ?>
+                                    </div>
+                                    <div class="analytics-card">
+                                        <h3>Recent Companies</h3>
+                                        <?php foreach (($analytics['recent_companies'] ?? []) as $row): ?>
+                                            <div class="analytics-feed-item"><strong><?= h($row['name']) ?></strong><span><?= h(($row['industry'] ?: 'Industry') . ' - ' . ($row['location'] ?: 'Location')) ?></span></div>
+                                        <?php endforeach; ?>
+                                    </div>
+                                    <div class="analytics-card">
+                                        <h3>Recent Applications</h3>
+                                        <?php foreach (($analytics['recent_applications'] ?? []) as $row): ?>
+                                            <div class="analytics-feed-item"><strong><?= h($row['applicant_name']) ?></strong><span><?= h(($row['job_title'] ?: 'Job') . ' - ' . ($row['company'] ?: 'Company') . ' - ' . $row['status']) ?></span></div>
+                                        <?php endforeach; ?>
+                                    </div>
+                                </div>
+                                <div class="analytics-grid analytics-grid-3">
+                                    <div class="analytics-card">
+                                        <h3>Top Skills</h3>
+                                        <?php $maxSkills = max(1, ...array_map(static fn($row): int => (int) $row['total'], $analytics['top_skills'] ?? [])); ?>
+                                        <?php foreach (($analytics['top_skills'] ?? []) as $row): ?>
+                                            <div class="analytics-line"><span><?= h($row['skill']) ?></span><strong><?= h((string) $row['total']) ?></strong></div>
+                                            <div class="analytics-bar"><span style="width:<?= h((string) min(100, ((int) $row['total'] / $maxSkills) * 100)) ?>%"></span></div>
+                                        <?php endforeach; ?>
+                                    </div>
+                                    <div class="analytics-card">
+                                        <h3>AI Match Distribution</h3>
+                                        <?php $maxMatchBucket = max(1, ...array_map(static fn($row): int => (int) $row['total'], $analytics['ai_match_distribution'] ?? [])); ?>
+                                        <?php foreach (($analytics['ai_match_distribution'] ?? []) as $row): ?>
+                                            <div class="analytics-line"><span><?= h($row['fit']) ?> fit</span><strong><?= h((string) $row['total']) ?></strong></div>
+                                            <div class="analytics-bar"><span style="width:<?= h((string) min(100, ((int) $row['total'] / $maxMatchBucket) * 100)) ?>%"></span></div>
+                                        <?php endforeach; ?>
+                                    </div>
+                                    <div class="analytics-card">
+                                        <h3>Contact Messages</h3>
+                                        <?php foreach (($analytics['recent_messages'] ?? []) as $row): ?>
+                                            <div class="analytics-feed-item"><strong><?= h($row['subject']) ?></strong><span><?= h($row['full_name']) ?> - <?= ((int) $row['is_read'] === 1) ? 'Read' : 'Unread' ?></span></div>
+                                        <?php endforeach; ?>
+                                        <?php if (empty($analytics['recent_messages'])): ?><p class="tiny muted">No messages yet.</p><?php endif; ?>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="profile-box">
-                                <h3>Top Locations</h3>
-                                <?php $maxLocation = max(1, ...array_map(static fn($row): int => (int) $row['total'], $analytics['locations'] ?? [])); ?>
-                                <?php foreach (($analytics['locations'] ?? []) as $row): ?>
-                                    <p class="tiny muted" style="margin:14px 0 0"><?= h($row['location']) ?> - <?= h((string) $row['total']) ?></p>
-                                    <div class="analytics-bar"><span style="width:<?= h((string) min(100, ((int) $row['total'] / $maxLocation) * 100)) ?>%"></span></div>
-                                <?php endforeach; ?>
+                        <?php else: ?>
+                            <div class="grid grid3">
+                                <div class="profile-box"><strong>Total Users</strong><p class="stat-value"><?= h($stats['users']) ?></p></div>
+                                <div class="profile-box"><strong>Companies</strong><p class="stat-value"><?= h($stats['companies']) ?></p></div>
+                                <div class="profile-box"><strong>Applications</strong><p class="stat-value"><?= h($stats['applications']) ?></p></div>
+                                <div class="profile-box"><strong>Open Jobs</strong><p class="stat-value"><?= h($stats['openJobs']) ?></p></div>
+                                <div class="profile-box"><strong>Accepted</strong><p class="stat-value"><?= h((string) count(array_filter($applicants, fn($a) => $a['status'] === 'Accepted'))) ?></p></div>
+                                <div class="profile-box"><strong>Rejected</strong><p class="stat-value"><?= h((string) count(array_filter($applicants, fn($a) => $a['status'] === 'Rejected'))) ?></p></div>
                             </div>
-                            <div class="profile-box">
-                                <h3>Job Deadlines</h3>
-                                <?php if (empty($analytics['expiring'])): ?><p class="tiny muted">No deadlines set yet.</p><?php endif; ?>
-                                <?php foreach (($analytics['expiring'] ?? []) as $row): ?>
-                                    <p class="tiny muted" style="margin:14px 0 0"><strong><?= h($row['title']) ?></strong><br>Expires <?= h(date('M j, Y', strtotime((string) $row['expires_at']))) ?></p>
-                                <?php endforeach; ?>
+                            <div class="grid grid3" style="margin-top:24px">
+                                <div class="profile-box">
+                                    <h3>Application Status</h3>
+                                    <?php $maxStatus = max(1, ...array_map(static fn($row): int => (int) $row['total'], $analytics['statuses'] ?? [])); ?>
+                                    <?php foreach (($analytics['statuses'] ?? []) as $row): ?>
+                                        <p class="tiny muted" style="margin:14px 0 0"><?= h($row['status']) ?> - <?= h((string) $row['total']) ?></p>
+                                        <div class="analytics-bar"><span style="width:<?= h((string) min(100, ((int) $row['total'] / $maxStatus) * 100)) ?>%"></span></div>
+                                    <?php endforeach; ?>
+                                </div>
+                                <div class="profile-box">
+                                    <h3>Top Locations</h3>
+                                    <?php $maxLocation = max(1, ...array_map(static fn($row): int => (int) $row['total'], $analytics['locations'] ?? [])); ?>
+                                    <?php foreach (($analytics['locations'] ?? []) as $row): ?>
+                                        <p class="tiny muted" style="margin:14px 0 0"><?= h($row['location']) ?> - <?= h((string) $row['total']) ?></p>
+                                        <div class="analytics-bar"><span style="width:<?= h((string) min(100, ((int) $row['total'] / $maxLocation) * 100)) ?>%"></span></div>
+                                    <?php endforeach; ?>
+                                </div>
+                                <div class="profile-box">
+                                    <h3>Job Deadlines</h3>
+                                    <?php if (empty($analytics['expiring'])): ?><p class="tiny muted">No deadlines set yet.</p><?php endif; ?>
+                                    <?php foreach (($analytics['expiring'] ?? []) as $row): ?>
+                                        <p class="tiny muted" style="margin:14px 0 0"><strong><?= h($row['title']) ?></strong><br>Expires <?= h(date('M j, Y', strtotime((string) $row['expires_at']))) ?></p>
+                                    <?php endforeach; ?>
+                                </div>
                             </div>
-                        </div>
-                        <div class="grid grid3" style="margin-top:24px">
-                            <div class="profile-box">
-                                <h3>Jobs by Company</h3>
-                                <?php $maxCompanyJobs = max(1, ...array_map(static fn($row): int => (int) $row['total'], $analytics['jobs_by_company'] ?? [])); ?>
-                                <?php if (empty($analytics['jobs_by_company'])): ?><p class="tiny muted">No company job data yet.</p><?php endif; ?>
-                                <?php foreach (($analytics['jobs_by_company'] ?? []) as $row): ?>
-                                    <p class="tiny muted" style="margin:14px 0 0"><?= h($row['company']) ?> - <?= h((string) $row['total']) ?></p>
-                                    <div class="analytics-bar"><span style="width:<?= h((string) min(100, ((int) $row['total'] / $maxCompanyJobs) * 100)) ?>%"></span></div>
-                                <?php endforeach; ?>
-                            </div>
-                            <div class="profile-box">
-                                <h3>Top Skills</h3>
-                                <?php $maxSkills = max(1, ...array_map(static fn($row): int => (int) $row['total'], $analytics['top_skills'] ?? [])); ?>
-                                <?php if (empty($analytics['top_skills'])): ?><p class="tiny muted">No CV skill signals yet.</p><?php endif; ?>
-                                <?php foreach (($analytics['top_skills'] ?? []) as $row): ?>
-                                    <p class="tiny muted" style="margin:14px 0 0"><?= h($row['skill']) ?> - <?= h((string) $row['total']) ?></p>
-                                    <div class="analytics-bar"><span style="width:<?= h((string) min(100, ((int) $row['total'] / $maxSkills) * 100)) ?>%"></span></div>
-                                <?php endforeach; ?>
-                            </div>
-                            <div class="profile-box">
-                                <h3>AI Match Distribution</h3>
-                                <?php $maxMatchBucket = max(1, ...array_map(static fn($row): int => (int) $row['total'], $analytics['ai_match_distribution'] ?? [])); ?>
-                                <?php foreach (($analytics['ai_match_distribution'] ?? []) as $row): ?>
-                                    <p class="tiny muted" style="margin:14px 0 0"><?= h($row['fit']) ?> fit - <?= h((string) $row['total']) ?></p>
-                                    <div class="analytics-bar"><span style="width:<?= h((string) min(100, ((int) $row['total'] / $maxMatchBucket) * 100)) ?>%"></span></div>
-                                <?php endforeach; ?>
-                            </div>
-                        </div>
+                        <?php endif; ?>
                     <?php elseif ($tab === 'blog' && is_admin_role()): ?>
                         <?php
                         $editingBlogPost = null;
