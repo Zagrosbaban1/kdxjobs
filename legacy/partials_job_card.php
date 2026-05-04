@@ -1,13 +1,17 @@
 <div class="card job-card card-pad">
     <div class="job-top">
         <span class="icon">💼</span>
-        <span class="badge"><?= h($job['type']) ?></span>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+            <span class="badge"><?= h($job['type']) ?></span>
+            <span class="badge"><?= h(ucfirst(job_listing_status($job))) ?></span>
+        </div>
     </div>
     <h3><?= h($job['title']) ?></h3>
     <p style="margin:.35rem 0 0;font-weight:800;color:#475569"><?= h($job['company']) ?></p>
     <div class="job-meta">
         <div>📍 <?= h($job['location']) ?></div>
         <div>💰 <?= h($job['salary']) ?></div>
+        <div><?= !empty($job['expires_at']) ? 'Deadline ' . h(date('M j, Y', strtotime((string) $job['expires_at']))) : 'No deadline' ?></div>
     </div>
     <div class="tags">
         <?php foreach (tags($job) as $tag): ?>

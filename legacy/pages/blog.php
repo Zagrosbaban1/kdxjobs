@@ -10,30 +10,14 @@ foreach ($publishedPosts as $post) {
     }
 }
 ?>
-<section class="section">
+<section class="section blog-page-section">
     <div class="wrap">
         <?php if ($selectedPost): ?>
-            <div class="job-detail-layout">
-                <aside class="card card-pad">
-                    <a class="btn outline" style="width:100%;margin-bottom:18px" href="<?= h(app_url('blog')) ?>">Back to Blog</a>
-                    <span class="badge"><?= h($selectedPost['category'] ?: 'Career Advice') ?></span>
-                    <h3 style="margin-top:18px"><?= h($selectedPost['title']) ?></h3>
-                    <p class="tiny muted" style="line-height:1.7">By <?= h($selectedPost['author_name'] ?: 'KDXJOBS Team') ?><br><?= h(date('M j, Y', strtotime((string) $selectedPost['created_at']))) ?></p>
-                    <?php $recentPosts = array_values(array_filter($publishedPosts, static fn(array $post): bool => (int) $post['id'] !== (int) $selectedPost['id'])); ?>
-                    <?php if ($recentPosts): ?>
-                        <div class="blog-recent-list">
-                            <h3 style="margin-bottom:14px">Recent Blog Posts</h3>
-                            <div class="grid">
-                                <?php foreach (array_slice($recentPosts, 0, 4) as $post): ?>
-                                    <a class="applicant" href="<?= h(app_url('blog', ['post' => $post['id']])) ?>">
-                                        <span><strong><?= h($post['title']) ?></strong><br><span class="tiny muted"><?= h(date('M j, Y', strtotime((string) $post['created_at']))) ?></span></span>
-                                    </a>
-                                <?php endforeach; ?>
-                            </div>
-                        </div>
-                    <?php endif; ?>
-                </aside>
-                <main class="card job-detail-main">
+            <div class="blog-detail-wrap">
+                <main class="card job-detail-main blog-detail-main">
+                    <div class="blog-detail-top">
+                        <a class="btn outline blog-back-btn" href="<?= h(app_url('blog')) ?>">Back to Blog</a>
+                    </div>
                     <?php if (!empty($selectedPost['cover_image'])): ?><img class="blog-cover detail" src="<?= h(download_url((string) $selectedPost['cover_image'])) ?>" alt="<?= h($selectedPost['title']) ?>"><?php endif; ?>
                     <p class="eyebrow" style="margin-bottom:8px"><?= h($selectedPost['category'] ?: 'Career Advice') ?></p>
                     <h2><?= h($selectedPost['title']) ?></h2>

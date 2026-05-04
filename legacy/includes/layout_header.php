@@ -2,12 +2,12 @@
     <div class="wrap nav">
         <a class="brand" href="<?= h(app_url('home')) ?>">
             <span class="brand-icon"><img src="<?= h(asset_url('assets/kdx-logo.svg')) ?>" alt=""></span>
-            <span><span class="brand-title">KDXJobs</span><br><span class="brand-sub"><?= h(tr('brand_sub', 'Tech Hiring Platform')) ?></span></span>
+            <span><span class="brand-title">KDXJobs</span></span>
         </a>
         <button class="btn outline nav-menu-toggle" type="button" data-nav-toggle aria-label="<?= h(tr('nav.menu', 'Open navigation menu')) ?>" aria-expanded="false">&#9776;</button>
         <nav class="nav-links">
             <?php
-            $navItems = [['home', tr('nav.home', 'Home')], ['jobs', tr('nav.jobs', 'Jobs')], ['companies', tr('nav.companies', 'Companies')], ['blog', tr('nav.blog', 'Blog')]];
+            $navItems = [['home', tr('nav.home', 'Home')], ['jobs', tr('nav.jobs', 'Jobs')], ['companies', tr('nav.companies', 'Companies')], ['learn', tr('nav.learn', 'Learn')], ['blog', tr('nav.blog', 'Blog')]];
             if (is_admin_role($user['role'] ?? '')) {
                 $navItems[] = ['admin', tr('nav.admin', 'Admin Panel')];
             } elseif (($user['role'] ?? '') === 'company') {

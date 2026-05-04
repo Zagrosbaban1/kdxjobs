@@ -548,6 +548,7 @@ function send_application_received_emails(PDO $pdo, int $applicationId): void
 {
     $stmt = $pdo->prepare(
         'SELECT a.applicant_name, a.applicant_email, j.title AS job_title, j.company_id, j.recruiter_id,
+                c.user_id AS company_user_id,
                 company_user.email AS company_email, recruiter.email AS recruiter_email
          FROM applications a
          JOIN jobs j ON j.id = a.job_id
@@ -585,6 +586,24 @@ function send_application_received_emails(PDO $pdo, int $applicationId): void
             $recipientEmail,
             'KDXJobs: new application received',
             "Hello,\n\nA new application has been submitted for {$jobTitle} by {$candidateName}.\n\nPlease sign in to KDXJobs to review the candidate details.\n\nKDXJobs Team"
+        );
+    }
+
+    $notificationRecipients = [];
+    if ((int) ($info['company_user_id'] ?? 0) > 0) {
+        $notificationRecipients[(int) $info['company_user_id']] = app_url('company', ['tab' => 'applications']);
+    }
+    if ((int) ($info['recruiter_id'] ?? 0) > 0) {
+        $notificationRecipients[(int) $info['recruiter_id']] = app_url('admin', ['tab' => 'applications']);
+    }
+
+    foreach ($notificationRecipients as $recipientId => $link) {
+        add_notification(
+            $pdo,
+            (int) $recipientId,
+            'New application received',
+            $candidateName . ' applied for ' . $jobTitle . '.',
+            $link
         );
     }
 }
@@ -678,6 +697,39 @@ function salary_bounds(?string $salary): array
     return [min($numbers), max($numbers)];
 }
 
+function job_listing_status(array $job): string
+{
+    $status = strtolower((string) ($job['status'] ?? 'active'));
+    $expiresAt = trim((string) ($job['expires_at'] ?? ''));
+
+    if ($status === 'closed') {
+        return 'closed';
+    }
+
+    if ($expiresAt !== '' && strtotime($expiresAt) < strtotime(date('Y-m-d'))) {
+        return 'expired';
+    }
+
+    return 'open';
+}
+
+function job_deadline_bucket(array $job): string
+{
+    $expiresAt = trim((string) ($job['expires_at'] ?? ''));
+    if ($expiresAt === '') {
+        return 'no_deadline';
+    }
+
+    $today = strtotime(date('Y-m-d'));
+    $deadline = strtotime($expiresAt);
+    if ($deadline < $today) {
+        return 'expired';
+    }
+
+    $daysUntilDeadline = (int) floor(($deadline - $today) / 86400);
+    return $daysUntilDeadline <= 14 ? 'closing_soon' : 'with_deadline';
+}
+
 function saved_search_signature(array $payload): string
 {
     return hash('sha256', json_encode([
@@ -686,6 +738,8 @@ function saved_search_signature(array $payload): string
         'locations' => array_values($payload['locations'] ?? []),
         'industries' => array_values($payload['industries'] ?? []),
         'tags' => array_values($payload['tags'] ?? []),
+        'statuses' => array_values($payload['statuses'] ?? []),
+        'deadline_filter' => (string) ($payload['deadline_filter'] ?? ''),
         'min_salary' => (int) ($payload['min_salary'] ?? 0),
         'max_salary' => (int) ($payload['max_salary'] ?? 0),
     ], JSON_UNESCAPED_SLASHES));
@@ -698,9 +752,17 @@ function saved_search_matches_job(array $savedSearch, array $job): bool
     $locations = array_values(array_filter(array_map('trim', explode(',', (string) ($savedSearch['locations'] ?? '')))));
     $industries = array_values(array_filter(array_map('trim', explode(',', (string) ($savedSearch['industries'] ?? '')))));
     $tagsFilter = array_values(array_filter(array_map('trim', explode(',', (string) ($savedSearch['tags'] ?? '')))));
+    $statuses = array_values(array_filter(array_map('trim', explode(',', (string) ($savedSearch['statuses'] ?? '')))));
+    $deadline = trim((string) ($savedSearch['deadline_filter'] ?? ''));
     $minSalary = (int) ($savedSearch['min_salary'] ?? 0);
     $maxSalary = (int) ($savedSearch['max_salary'] ?? 0);
 
+    if ($statuses && !in_array(job_listing_status($job), $statuses, true)) {
+        return false;
+    }
+    if ($deadline !== '' && job_deadline_bucket($job) !== $deadline) {
+        return false;
+    }
     if ($types && !in_array((string) ($job['type'] ?? ''), $types, true)) {
         return false;
     }
@@ -829,6 +891,9 @@ $filterTypes = query_list('type');
 $filterLocations = query_list('location');
 $filterIndustries = query_list('industry');
 $filterTags = query_list('tag');
+$filterStatuses = array_values(array_intersect(query_list('status'), ['open', 'closed', 'expired']));
+$deadlineFilter = (string) ($_GET['deadline'] ?? '');
+$deadlineFilter = in_array($deadlineFilter, ['with_deadline', 'no_deadline', 'closing_soon', 'expired'], true) ? $deadlineFilter : '';
 $minSalary = max(0, (int) ($_GET['min_salary'] ?? 0));
 $maxSalary = max(0, (int) ($_GET['max_salary'] ?? 0));
 $requestedSort = (string) ($_GET['sort'] ?? 'newest');
@@ -880,6 +945,8 @@ try {
             locations VARCHAR(255) NULL,
             industries VARCHAR(255) NULL,
             tags VARCHAR(255) NULL,
+            statuses VARCHAR(120) NULL,
+            deadline_filter VARCHAR(40) NULL,
             min_salary INT NOT NULL DEFAULT 0,
             max_salary INT NOT NULL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -907,6 +974,8 @@ try {
     );
     $pdo->exec("INSERT IGNORE INTO app_settings (setting_key, setting_value) VALUES ('ai_matching_mode', 'balanced')");
     $pdo->exec("INSERT IGNORE INTO app_settings (setting_key, setting_value) VALUES ('email_notifications_enabled', '1')");
+    $pdo->exec("ALTER TABLE saved_searches ADD COLUMN IF NOT EXISTS statuses VARCHAR(120) NULL AFTER tags");
+    $pdo->exec("ALTER TABLE saved_searches ADD COLUMN IF NOT EXISTS deadline_filter VARCHAR(40) NULL AFTER statuses");
     $pdo->exec("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS expires_at DATE NULL AFTER status");
     $pdo->exec("UPDATE jobs SET status = 'closed' WHERE expires_at IS NOT NULL AND expires_at < CURDATE() AND status <> 'closed'");
     $pdo->exec("ALTER TABLE applications MODIFY status ENUM('New', 'Reviewed', 'Shortlisted', 'Interview', 'Accepted', 'Rejected') NOT NULL DEFAULT 'New'");
@@ -1147,6 +1216,12 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
             need(['job_id', 'applicant_name', 'applicant_email', 'role']);
             $jobId = (int) field('job_id');
             $userId = (int) ($_SESSION['user']['id'] ?? 0);
+            $jobStateStmt = $pdo->prepare('SELECT status, expires_at FROM jobs WHERE id = :id LIMIT 1');
+            $jobStateStmt->execute([':id' => $jobId]);
+            $jobState = $jobStateStmt->fetch();
+            if (!$jobState || job_listing_status($jobState) !== 'open') {
+                throw new RuntimeException('This job is no longer accepting applications.');
+            }
             $applicantEmail = require_valid_email_address(field('applicant_email'), 'Please enter a valid applicant email.');
             $duplicateStmt = $pdo->prepare(
                 'SELECT id, status
@@ -1269,13 +1344,15 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 'locations' => post_list('search_location'),
                 'industries' => post_list('search_industry'),
                 'tags' => post_list('search_tag'),
+                'statuses' => array_values(array_intersect(post_list('search_status'), ['open', 'closed', 'expired'])),
+                'deadline_filter' => in_array(field('search_deadline'), ['with_deadline', 'no_deadline', 'closing_soon', 'expired'], true) ? field('search_deadline') : '',
                 'min_salary' => max(0, (int) field('search_min_salary')),
                 'max_salary' => max(0, (int) field('search_max_salary')),
             ];
 
             $stmt = $pdo->prepare(
-                'INSERT IGNORE INTO saved_searches (user_id, signature, query_text, types, locations, industries, tags, min_salary, max_salary)
-                 VALUES (:user_id, :signature, :query_text, :types, :locations, :industries, :tags, :min_salary, :max_salary)'
+                'INSERT IGNORE INTO saved_searches (user_id, signature, query_text, types, locations, industries, tags, statuses, deadline_filter, min_salary, max_salary)
+                 VALUES (:user_id, :signature, :query_text, :types, :locations, :industries, :tags, :statuses, :deadline_filter, :min_salary, :max_salary)'
             );
             $stmt->execute([
                 ':user_id' => (int) $_SESSION['user']['id'],
@@ -1285,6 +1362,8 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':locations' => $payload['locations'] ? implode(', ', $payload['locations']) : null,
                 ':industries' => $payload['industries'] ? implode(', ', $payload['industries']) : null,
                 ':tags' => $payload['tags'] ? implode(', ', $payload['tags']) : null,
+                ':statuses' => $payload['statuses'] ? implode(', ', $payload['statuses']) : null,
+                ':deadline_filter' => $payload['deadline_filter'] ?: null,
                 ':min_salary' => $payload['min_salary'],
                 ':max_salary' => $payload['max_salary'],
             ]);
@@ -1541,10 +1620,29 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new RuntimeException('Not allowed to edit applications.');
             }
 
+            $oldStatusStmt = $pdo->prepare('SELECT status FROM applications WHERE id = :id LIMIT 1');
+            $oldStatusStmt->execute([':id' => $applicationId]);
+            $oldStatus = (string) ($oldStatusStmt->fetchColumn() ?: '');
+
             $stmt = $pdo->prepare($sql);
             $stmt->execute($params);
             if ($stmt->rowCount() > 0) {
-                add_application_event($pdo, $applicationId, 'edited', 'Application details edited', 'Recruitment team updated the application details.');
+                if ($oldStatus !== '' && $oldStatus !== $nextStatus) {
+                    $info = $pdo->prepare('SELECT a.user_id, a.applicant_name, a.applicant_email, j.title AS job_title FROM applications a JOIN jobs j ON j.id = a.job_id WHERE a.id = :id LIMIT 1');
+                    $info->execute([':id' => $applicationId]);
+                    $applicationInfo = $info->fetch();
+                    add_application_event($pdo, $applicationId, 'status', 'Status changed to ' . $nextStatus, 'Your application for ' . ($applicationInfo['job_title'] ?? 'this job') . ' is now ' . $nextStatus . '.');
+                    add_notification(
+                        $pdo,
+                        (int) ($applicationInfo['user_id'] ?? 0),
+                        'Application update',
+                        'Your application for ' . ($applicationInfo['job_title'] ?? 'a job') . ' is now ' . $nextStatus . '.',
+                        app_url('user', ['tab' => 'applications'])
+                    );
+                    send_application_status_email(is_array($applicationInfo) ? $applicationInfo : [], $nextStatus);
+                } else {
+                    add_application_event($pdo, $applicationId, 'edited', 'Application details edited', 'Recruitment team updated the application details.');
+                }
             }
 
             go($redirectPage, 'Application details saved.', $redirectExtra);
@@ -2091,7 +2189,7 @@ if ($pdo) {
          JOIN companies c ON c.id = j.company_id
          LEFT JOIN users u ON u.id = j.recruiter_id
          LEFT JOIN job_tags t ON t.job_id = j.id
-         WHERE j.status = 'active' AND (j.expires_at IS NULL OR j.expires_at >= CURDATE())
+         WHERE j.status <> 'pending'
          GROUP BY j.id
          ORDER BY j.created_at DESC"
     )->fetchAll();
@@ -2111,7 +2209,17 @@ if ($pdo) {
         }));
     }
 
-    $jobs = array_values(array_filter($jobs, static function (array $job) use ($filterTypes, $filterLocations, $filterIndustries, $filterTags, $minSalary, $maxSalary): bool {
+    $jobs = array_values(array_filter($jobs, static function (array $job) use ($filterTypes, $filterLocations, $filterIndustries, $filterTags, $filterStatuses, $deadlineFilter, $minSalary, $maxSalary): bool {
+        $listingStatus = job_listing_status($job);
+        if (!$filterStatuses && $deadlineFilter === '' && $listingStatus !== 'open') {
+            return false;
+        }
+        if ($filterStatuses && !in_array($listingStatus, $filterStatuses, true)) {
+            return false;
+        }
+        if ($deadlineFilter !== '' && job_deadline_bucket($job) !== $deadlineFilter) {
+            return false;
+        }
         if ($filterTypes && !in_array((string) ($job['type'] ?? ''), $filterTypes, true)) {
             return false;
         }
@@ -2381,7 +2489,8 @@ if ($pdo) {
 
 $selectedJobId = (int) ($_GET['job'] ?? ($jobs[0]['id'] ?? 0));
 $selectedJob = null;
-foreach ($jobs as $job) {
+$selectedJobPool = isset($_GET['job']) ? $allJobs : $jobs;
+foreach ($selectedJobPool as $job) {
     if ((int) $job['id'] === $selectedJobId) {
         $selectedJob = $job;
         break;
@@ -2394,6 +2503,10 @@ $jobIndustryValues = array_filter(array_map(static fn(array $job): string => (st
 $jobTypeCounts = array_count_values($jobTypeValues);
 $jobLocationCounts = array_count_values($jobLocationValues);
 $jobIndustryCounts = array_count_values($jobIndustryValues);
+$jobStatusValues = array_map(static fn(array $job): string => job_listing_status($job), $allJobs);
+$jobStatusCounts = array_count_values($jobStatusValues);
+$jobDeadlineValues = array_map(static fn(array $job): string => job_deadline_bucket($job), $allJobs);
+$jobDeadlineCounts = array_count_values($jobDeadlineValues);
 $jobTagCounts = [];
 $jobTypes = array_values(array_unique($jobTypeValues));
 $jobLocations = array_values(array_unique($jobLocationValues));
@@ -2410,7 +2523,7 @@ sort($jobTypes);
 sort($jobLocations);
 sort($jobIndustries);
 sort($jobTags);
-$activeJobFilters = ($search !== '' ? 1 : 0) + count($filterTypes) + count($filterLocations) + count($filterIndustries) + count($filterTags) + ($minSalary > 0 ? 1 : 0) + ($maxSalary > 0 ? 1 : 0);
+$activeJobFilters = ($search !== '' ? 1 : 0) + count($filterTypes) + count($filterLocations) + count($filterIndustries) + count($filterTags) + count($filterStatuses) + ($deadlineFilter !== '' ? 1 : 0) + ($minSalary > 0 ? 1 : 0) + ($maxSalary > 0 ? 1 : 0);
 $faqItems = [
     ['question' => 'How do I apply for a job on KDXJobs?', 'answer' => 'Create a job seeker account, complete your profile, open a job that matches your goals, and submit your application with your CV.'],
     ['question' => 'Can I track my application progress?', 'answer' => 'Yes. KDXJobs shows application updates, interview scheduling, service messages, and status changes so you can follow your journey clearly.'],
@@ -5058,6 +5171,62 @@ function match_experience_short_label(array $match): string
         : 'Exp: ' . $candidateLabel;
 }
 
+function match_education_label(array $match): string
+{
+    $required = normalize_text_list($match['education_matches'] ?? []);
+    $missing = normalize_text_list($match['education_missing'] ?? []);
+    $detected = normalize_text_list($match['screen_education'] ?? []);
+
+    if ($required) {
+        return 'Matched: ' . implode(', ', array_slice($required, 0, 2));
+    }
+    if ($missing) {
+        return 'Missing: ' . implode(', ', array_slice($missing, 0, 2));
+    }
+    if ($detected) {
+        return 'Detected: ' . implode(', ', array_slice($detected, 0, 2));
+    }
+
+    return 'Not clearly detected';
+}
+
+function match_recommended_next_action(int $score, array $match): string
+{
+    $reasons = normalize_text_list($match['reasons'] ?? []);
+    foreach ($reasons as $reason) {
+        if (stripos($reason, 'next step:') !== false) {
+            return trim(preg_replace('/^.*next step:\s*/i', '', $reason));
+        }
+    }
+
+    if ($score >= 75) {
+        return 'Shortlist or open the application for final recruiter review.';
+    }
+    if ($score >= 50) {
+        return 'Review manually and confirm the missing requirements before deciding.';
+    }
+
+    return 'Keep low priority unless the CV or interview adds stronger evidence.';
+}
+
+function match_chip_list_html(array $items, string $emptyText, int $limit = 4): string
+{
+    $items = normalize_text_list($items);
+    if (!$items) {
+        return '<span class="ai-match-empty">' . h($emptyText) . '</span>';
+    }
+
+    $html = '<div class="ai-match-chips">';
+    foreach (array_slice($items, 0, $limit) as $item) {
+        $html .= '<span>' . h((string) $item) . '</span>';
+    }
+    if (count($items) > $limit) {
+        $html .= '<span>+' . h((string) (count($items) - $limit)) . '</span>';
+    }
+
+    return $html . '</div>';
+}
+
 function match_explanation_html(array $match): string
 {
     $matches = normalize_text_list($match['matches'] ?? []);
@@ -5419,6 +5588,8 @@ function candidate_match_html(array $application, bool $inlineDetails = true, st
     $matchCount = count($match['matches'] ?? []);
     $missingCount = count($match['missing'] ?? []);
     $experienceLine = $inlineDetails ? match_experience_explanation($match) : match_experience_short_label($match);
+    $educationLine = match_education_label($match);
+    $nextAction = match_recommended_next_action($score, $match);
     $cvQuality = is_array($match['cv_quality'] ?? null) ? $match['cv_quality'] : null;
     $cvQualityHtml = $cvQuality
         ? '<span class="tiny muted cv-quality-line"><strong>CV Quality: ' . h((string) ($cvQuality['score'] ?? 0)) . '% - ' . h((string) ($cvQuality['label'] ?? 'Review')) . '</strong></span>'
@@ -5468,6 +5639,25 @@ function candidate_match_html(array $application, bool $inlineDetails = true, st
     } elseif ($hasDetails) {
         $detailsHtml = '<a class="match-details-link" href="' . h(application_page_url($application, $backPage, $backTab) . '#ai-screening') . '">Why score?</a>';
     }
+    $cleanHtml = '<div class="match-score ai-match-view ' . h($class) . '">';
+    $cleanHtml .= '<div class="ai-match-head"><span class="tiny muted">AI CV Match</span><strong>' . h((string) $score) . '%</strong><em>' . h($fitLabel) . '</em></div>';
+    $cleanHtml .= '<div class="score-bar"><span style="width:' . h((string) $score) . '%"></span></div>';
+    $cleanHtml .= '<div class="ai-match-grid">';
+    $cleanHtml .= '<div class="ai-match-box good"><span>Matched skills</span>' . match_chip_list_html($match['matches'] ?? [], 'No direct matches yet', $inlineDetails ? 6 : 3) . '</div>';
+    $cleanHtml .= '<div class="ai-match-box risk"><span>Missing skills</span>' . match_chip_list_html($match['missing'] ?? [], 'No major gaps detected', $inlineDetails ? 6 : 3) . '</div>';
+    $cleanHtml .= '<div class="ai-match-box"><span>Experience match</span><p>' . h($experienceLine) . '</p></div>';
+    $cleanHtml .= '<div class="ai-match-box"><span>Education match</span><p>' . h($educationLine) . '</p></div>';
+    $cleanHtml .= '</div>';
+    $cleanHtml .= '<div class="ai-next-action"><span>Recommended next action</span><p>' . h($nextAction) . '</p></div>';
+    $cleanHtml .= '<div class="match-mini-summary"><span>' . h((string) $matchCount) . ' matched</span><span>' . h((string) $missingCount) . ' gaps</span><span>' . h(ai_matching_mode_label((string) ($match['matching_mode'] ?? ai_matching_mode()))) . ' mode</span></div>';
+    $cleanHtml .= $cvQualityHtml;
+    if ($inlineDetails && $recruiterSummary !== '') {
+        $cleanHtml .= '<p class="recruiter-summary">' . h($recruiterSummary) . '</p>';
+    }
+    $cleanHtml .= $detailsHtml;
+
+    return $cleanHtml . '</div>';
+
     return '<div class="match-score ' . h($class) . '">'
         . '<span class="tiny muted">AI CV Match</span>'
         . '<strong>' . h((string) $score) . '%</strong>'
@@ -5756,6 +5946,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
 <?php if ($error): ?><div class="alert bad"><?= h($error) ?></div><?php endif; ?>
 
 <?php include __DIR__ . '/pages/home.php'; ?>
+<?php include __DIR__ . '/pages/learn.php'; ?>
 
 <?php if ($page === 'jobs'): ?>
 <section class="section">
@@ -5765,7 +5956,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
         <?php
         $selectedJobTags = tags($selectedJob);
         $selectedJobSaved = in_array((int) $selectedJob['id'], $savedJobIds, true);
-        $similarJobs = similar_jobs_for_job($allJobs, $selectedJob, 3);
+        $similarJobs = similar_jobs_for_job(array_values(array_filter($allJobs, static fn(array $job): bool => job_listing_status($job) === 'open')), $selectedJob, 3);
         $jobMatchInsights = (($user['role'] ?? '') === 'jobseeker') ? job_match_insights($selectedJob, $user) : null;
         $currentUserEmail = (string) ($user['email'] ?? '');
         $existingApplication = null;
@@ -5784,6 +5975,8 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
             }
         }
         $deadlineText = !empty($selectedJob['expires_at']) ? date('M j, Y', strtotime((string) $selectedJob['expires_at'])) : 'Open until filled';
+        $selectedJobListingStatus = job_listing_status($selectedJob);
+        $selectedJobCanApply = $selectedJobListingStatus === 'open';
         ?>
         <div class="job-detail-layout">
             <aside class="card card-pad job-action-panel">
@@ -5812,11 +6005,14 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                     <div>ðŸ’° <?= h($selectedJob['salary']) ?></div>
                 </div>
                 <div class="job-side-facts">
+                    <div><span>Status</span><strong><?= h(ucfirst($selectedJobListingStatus)) ?></strong></div>
                     <div><span>Deadline</span><strong><?= h($deadlineText) ?></strong></div>
                 </div>
                 <?php if ($existingApplication): ?>
                     <div class="job-applied-note"><strong>Already applied</strong><span>Status: <?= h($existingApplication['status'] ?? 'New') ?></span></div>
                     <a class="btn" style="width:100%;margin-top:14px" href="<?= h(application_page_url($existingApplication, 'user', 'applications')) ?>">Track Application</a>
+                <?php elseif (!$selectedJobCanApply): ?>
+                    <div class="job-applied-note"><strong>Applications closed</strong><span>This listing is <?= h($selectedJobListingStatus) ?>.</span></div>
                 <?php else: ?>
                     <a class="btn" style="width:100%;margin-top:14px" href="#apply">Apply Now</a>
                 <?php endif; ?>
@@ -5861,6 +6057,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                     <div class="info"><div class="tiny muted">Location</div><strong><?= h($selectedJob['location']) ?></strong></div>
                     <div class="info"><div class="tiny muted">Salary</div><strong><?= h($selectedJob['salary']) ?></strong></div>
                     <div class="info"><div class="tiny muted">Company</div><strong><?= h($selectedJob['company']) ?></strong></div>
+                    <div class="info"><div class="tiny muted">Status</div><strong><?= h(ucfirst($selectedJobListingStatus)) ?></strong></div>
                     <?php if (!empty($selectedJob['expires_at'])): ?><div class="info"><div class="tiny muted">Deadline</div><strong><?= h(date('M j, Y', strtotime((string) $selectedJob['expires_at']))) ?></strong></div><?php endif; ?>
                 </div>
                 <?php if ($jobMatchInsights): ?>
@@ -5918,6 +6115,11 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                             <strong>You already applied for this job.</strong>
                             <p class="tiny muted" style="margin:10px 0 18px">Current status: <?= h($existingApplication['status'] ?? 'New') ?>. Open your application to follow timeline updates and service messages.</p>
                             <a class="btn" href="<?= h(application_page_url($existingApplication, 'user', 'applications')) ?>">Track Application</a>
+                        </div>
+                    <?php elseif (!$selectedJobCanApply): ?>
+                        <div class="profile-box">
+                            <strong>Applications are closed.</strong>
+                            <p class="tiny muted" style="margin:10px 0 0">This job is <?= h($selectedJobListingStatus) ?>, so candidates can no longer apply.</p>
                         </div>
                     <?php else: ?>
                         <form class="form" method="post" enctype="multipart/form-data">
@@ -5984,6 +6186,23 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                         <label class="label">Max<input class="input" type="number" min="0" name="max_salary" value="<?= $maxSalary > 0 ? h((string) $maxSalary) : '' ?>" placeholder="2000000"></label>
                     </div>
                 </details>
+                <details class="filter-block" <?= ($filterStatuses || $deadlineFilter !== '') ? 'open' : '' ?>>
+                    <summary>Status & Deadline</summary>
+                    <div class="filter-body check-list">
+                        <?php foreach (['open' => 'Open', 'closed' => 'Closed', 'expired' => 'Expired'] as $statusValue => $statusLabel): ?>
+                            <label class="check-item"><input type="checkbox" name="status[]" value="<?= h($statusValue) ?>" <?= in_array($statusValue, $filterStatuses, true) ? 'checked' : '' ?>><span><?= h($statusLabel) ?> [<?= h((string) ($jobStatusCounts[$statusValue] ?? 0)) ?>]</span></label>
+                        <?php endforeach; ?>
+                        <label class="label">Deadline
+                            <select class="select" name="deadline">
+                                <option value="" <?= $deadlineFilter === '' ? 'selected' : '' ?>>Any deadline</option>
+                                <option value="closing_soon" <?= $deadlineFilter === 'closing_soon' ? 'selected' : '' ?>>Closing within 14 days [<?= h((string) ($jobDeadlineCounts['closing_soon'] ?? 0)) ?>]</option>
+                                <option value="with_deadline" <?= $deadlineFilter === 'with_deadline' ? 'selected' : '' ?>>Has later deadline [<?= h((string) ($jobDeadlineCounts['with_deadline'] ?? 0)) ?>]</option>
+                                <option value="no_deadline" <?= $deadlineFilter === 'no_deadline' ? 'selected' : '' ?>>No deadline [<?= h((string) ($jobDeadlineCounts['no_deadline'] ?? 0)) ?>]</option>
+                                <option value="expired" <?= $deadlineFilter === 'expired' ? 'selected' : '' ?>>Expired deadline [<?= h((string) ($jobDeadlineCounts['expired'] ?? 0)) ?>]</option>
+                            </select>
+                        </label>
+                    </div>
+                </details>
                 <details class="filter-block" open>
                     <summary>Job Types</summary>
                     <div class="filter-body check-list">
@@ -6029,6 +6248,8 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
             <?php foreach ($filterLocations as $value): ?><input type="hidden" name="location[]" value="<?= h($value) ?>"><?php endforeach; ?>
             <?php foreach ($filterIndustries as $value): ?><input type="hidden" name="industry[]" value="<?= h($value) ?>"><?php endforeach; ?>
             <?php foreach ($filterTags as $value): ?><input type="hidden" name="tag[]" value="<?= h($value) ?>"><?php endforeach; ?>
+            <?php foreach ($filterStatuses as $value): ?><input type="hidden" name="status[]" value="<?= h($value) ?>"><?php endforeach; ?>
+            <?php if ($deadlineFilter !== ''): ?><input type="hidden" name="deadline" value="<?= h($deadlineFilter) ?>"><?php endif; ?>
             <?php if ($minSalary > 0): ?><input type="hidden" name="min_salary" value="<?= h((string) $minSalary) ?>"><?php endif; ?>
             <?php if ($maxSalary > 0): ?><input type="hidden" name="max_salary" value="<?= h((string) $maxSalary) ?>"><?php endif; ?>
             <input type="hidden" name="sort" value="<?= h($jobSort) ?>">
@@ -6048,6 +6269,8 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                         <?php foreach ($filterLocations as $value): ?><input type="hidden" name="search_location[]" value="<?= h($value) ?>"><?php endforeach; ?>
                         <?php foreach ($filterIndustries as $value): ?><input type="hidden" name="search_industry[]" value="<?= h($value) ?>"><?php endforeach; ?>
                         <?php foreach ($filterTags as $value): ?><input type="hidden" name="search_tag[]" value="<?= h($value) ?>"><?php endforeach; ?>
+                        <?php foreach ($filterStatuses as $value): ?><input type="hidden" name="search_status[]" value="<?= h($value) ?>"><?php endforeach; ?>
+                        <?php if ($deadlineFilter !== ''): ?><input type="hidden" name="search_deadline" value="<?= h($deadlineFilter) ?>"><?php endif; ?>
                         <input type="hidden" name="search_min_salary" value="<?= h((string) $minSalary) ?>">
                         <input type="hidden" name="search_max_salary" value="<?= h((string) $maxSalary) ?>">
                         <button class="btn outline" type="submit">Save Search</button>
@@ -6060,6 +6283,8 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                     <?php foreach ($filterLocations as $value): ?><input type="hidden" name="location[]" value="<?= h($value) ?>"><?php endforeach; ?>
                     <?php foreach ($filterIndustries as $value): ?><input type="hidden" name="industry[]" value="<?= h($value) ?>"><?php endforeach; ?>
                     <?php foreach ($filterTags as $value): ?><input type="hidden" name="tag[]" value="<?= h($value) ?>"><?php endforeach; ?>
+                    <?php foreach ($filterStatuses as $value): ?><input type="hidden" name="status[]" value="<?= h($value) ?>"><?php endforeach; ?>
+                    <?php if ($deadlineFilter !== ''): ?><input type="hidden" name="deadline" value="<?= h($deadlineFilter) ?>"><?php endif; ?>
                     <?php if ($minSalary > 0): ?><input type="hidden" name="min_salary" value="<?= h((string) $minSalary) ?>"><?php endif; ?>
                     <?php if ($maxSalary > 0): ?><input type="hidden" name="max_salary" value="<?= h((string) $maxSalary) ?>"><?php endif; ?>
                     <span class="tiny muted">Sort by</span>
@@ -6580,6 +6805,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                                     <strong><?= h($notification['title']) ?></strong>
                                     <p class="tiny muted" style="margin:6px 0 0"><?= h($notification['body']) ?></p>
                                     <span class="tiny muted"><?= h(date('M j, Y g:i A', strtotime((string) $notification['created_at']))) ?></span>
+                                    <?php if (!empty($notification['link'])): ?><br><a class="tiny" href="<?= h((string) $notification['link']) ?>">Open</a><?php endif; ?>
                                 </div>
                             <?php endforeach; ?>
                         </div>
@@ -6996,7 +7222,9 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                                         <span class="tiny muted">
                                             <?= h($savedSearch['types'] ?: 'All types') ?> ·
                                             <?= h($savedSearch['locations'] ?: 'All locations') ?> ·
-                                            <?= h($savedSearch['industries'] ?: 'All industries') ?>
+                                            <?= h($savedSearch['industries'] ?: 'All industries') ?> Â·
+                                            <?= h($savedSearch['statuses'] ?: 'Open jobs') ?> Â·
+                                            <?= h($savedSearch['deadline_filter'] ? str_replace('_', ' ', (string) $savedSearch['deadline_filter']) : 'Any deadline') ?>
                                         </span><br>
                                         <span class="tiny muted">Saved <?= h(date('M j, Y', strtotime((string) $savedSearch['created_at']))) ?></span>
                                     </div>

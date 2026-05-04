@@ -657,4 +657,271 @@
 
         window.setInterval(() => refreshServiceChat(chat), 5000);
     });
+
+    document.querySelectorAll('[data-career-quiz]').forEach((quiz) => {
+        const questions = [
+            {
+                category: 'Interview',
+                question: 'What is the best thing to do before an interview?',
+                help: 'Choose the answer that shows preparation and confidence.',
+                answers: ['Arrive and improvise everything', 'Research the company and prepare examples', 'Only ask about salary'],
+                correct: 1,
+                action: 'Prepare two examples from your work, study, or projects before the interview.'
+            },
+            {
+                category: 'CV',
+                question: 'Which CV detail helps recruiters contact you faster?',
+                help: 'Think about the first practical information a recruiter needs.',
+                answers: ['A clear phone number and email', 'A very long paragraph', 'A hidden social profile only'],
+                correct: 0,
+                action: 'Check that your phone, email, location, and CV file are easy to find.'
+            },
+            {
+                category: 'Profile',
+                question: 'What makes a skill stronger on your profile?',
+                help: 'A skill is stronger when it is connected to proof.',
+                answers: ['Listing every skill you have heard of', 'Showing where you used it', 'Writing it in all capital letters'],
+                correct: 1,
+                action: 'Add real examples beside your strongest skills, like projects, tools, or work tasks.'
+            },
+            {
+                category: 'Applications',
+                question: 'After applying for a job, what should you track?',
+                help: 'Good job searching is not only sending applications.',
+                answers: ['Application status and next step', 'Only the company logo', 'Nothing until someone calls'],
+                correct: 0,
+                action: 'Use your dashboard to follow application progress and prepare for the next stage.'
+            },
+            {
+                question: 'What is the best way to answer “Tell me about yourself”?',
+                help: 'The strongest answer is short, relevant, and connected to the role.',
+                answers: ['Share your full life story', 'Give a short summary of skills and goals', 'Say you do not know'],
+                correct: 1,
+                action: 'Write a 30-second introduction that connects your background to the job you want.'
+            },
+            {
+                category: 'Job Match',
+                question: 'Which job should you apply to first?',
+                help: 'A good match saves time for you and the employer.',
+                answers: ['Any job with a nice title', 'A role matching your skills and location', 'Only jobs with no description'],
+                correct: 1,
+                action: 'Compare job requirements with your skills before applying.'
+            },
+            {
+                category: 'Applications',
+                question: 'What should your cover note focus on?',
+                help: 'A cover note should be useful, not generic.',
+                answers: ['Why you fit this specific job', 'A copy of your CV', 'One sentence saying hello only'],
+                correct: 0,
+                action: 'Mention one or two reasons you fit the role before submitting.'
+            },
+            {
+                category: 'Mindset',
+                question: 'What is a professional response to rejection?',
+                help: 'Rejection can still help your career.',
+                answers: ['Ignore every future opportunity', 'Ask politely for feedback and keep improving', 'Send an angry message'],
+                correct: 1,
+                action: 'Use rejection as feedback. Improve your CV, skills, or interview answers.'
+            },
+            {
+                category: 'Planning',
+                question: 'Why should you save interesting jobs?',
+                help: 'Saving helps you compare and plan.',
+                answers: ['To compare roles before applying', 'To avoid applying forever', 'To hide them from others'],
+                correct: 0,
+                action: 'Save roles you like, then compare salary, location, requirements, and company.'
+            },
+            {
+                category: 'Profile',
+                question: 'What is the best next step when your profile score is low?',
+                help: 'A complete profile makes matching easier.',
+                answers: ['Leave it empty', 'Add missing profile details and upload CV', 'Delete your account'],
+                correct: 1,
+                action: 'Complete your profile details, skills, and CV before applying to more jobs.'
+            }
+        ];
+        questions[4].category = 'Interview';
+        questions[4].question = 'What is the best way to answer "Tell me about yourself"?';
+
+        const questionEl = quiz.querySelector('[data-quiz-question]');
+        const helpEl = quiz.querySelector('[data-quiz-help]');
+        const answersEl = quiz.querySelector('[data-quiz-answers]');
+        const progressEl = quiz.querySelector('[data-quiz-progress]');
+        const progressBar = quiz.querySelector('[data-quiz-progress-bar]');
+        const feedback = quiz.querySelector('[data-quiz-feedback]');
+        const feedbackText = quiz.querySelector('[data-quiz-feedback-text]');
+        const result = quiz.querySelector('[data-quiz-result]');
+        const scoreEl = quiz.querySelector('[data-quiz-score]');
+        const summaryEl = quiz.querySelector('[data-quiz-summary]');
+        const breakdownEl = quiz.querySelector('[data-quiz-breakdown]');
+        const reviewEl = quiz.querySelector('[data-quiz-review]');
+        const prevButton = quiz.querySelector('[data-quiz-prev]');
+        const nextButton = quiz.querySelector('[data-quiz-next]');
+        const restartButton = quiz.querySelector('[data-quiz-restart]');
+        const copyButton = quiz.querySelector('[data-quiz-copy]');
+        const copyStatus = quiz.querySelector('[data-quiz-copy-status]');
+        let current = 0;
+        const chosen = Array(questions.length).fill(null);
+        let latestResultText = '';
+
+        const resultText = (score) => {
+            if (score >= 8) {
+                return 'Excellent. You are ready to apply with confidence. Keep your profile fresh and track every application.';
+            }
+            if (score >= 5) {
+                return 'Good start. You understand the basics, but you should improve your CV, examples, and interview preparation.';
+            }
+            return 'You need more preparation before applying. Start with your CV, profile details, and basic interview answers.';
+        };
+
+        const showResult = () => {
+            const score = chosen.reduce((total, answer, index) => total + (answer === questions[index].correct ? 1 : 0), 0);
+            const categories = questions.reduce((items, item, index) => {
+                const key = item.category || 'General';
+                if (!items[key]) {
+                    items[key] = { correct: 0, total: 0 };
+                }
+                items[key].total += 1;
+                if (chosen[index] === item.correct) {
+                    items[key].correct += 1;
+                }
+                return items;
+            }, {});
+            const weakAreas = Object.keys(categories).filter((key) => categories[key].correct < categories[key].total);
+            questionEl.textContent = 'Quiz completed';
+            helpEl.textContent = 'Here is your final result.';
+            answersEl.innerHTML = '';
+            feedback.hidden = true;
+            result.hidden = false;
+            scoreEl.textContent = score + ' / ' + questions.length;
+            summaryEl.textContent = resultText(score);
+            if (weakAreas.length > 0) {
+                summaryEl.textContent += ' Focus next on: ' + weakAreas.slice(0, 3).join(', ') + '.';
+            }
+            latestResultText = 'KDXJobs Job Readiness Quiz: ' + score + '/' + questions.length + '. ' + summaryEl.textContent;
+            if (breakdownEl) {
+                breakdownEl.innerHTML = '';
+                Object.keys(categories).forEach((category) => {
+                    const item = categories[category];
+                    const card = document.createElement('div');
+                    const label = document.createElement('span');
+                    const value = document.createElement('strong');
+                    const bar = document.createElement('i');
+                    card.className = 'quiz-breakdown-item';
+                    label.textContent = category;
+                    value.textContent = item.correct + ' / ' + item.total;
+                    bar.style.width = ((item.correct / item.total) * 100) + '%';
+                    card.appendChild(label);
+                    card.appendChild(value);
+                    card.appendChild(bar);
+                    breakdownEl.appendChild(card);
+                });
+            }
+            if (reviewEl) {
+                reviewEl.innerHTML = '';
+                questions.forEach((item, index) => {
+                    const row = document.createElement('div');
+                    const isCorrect = chosen[index] === item.correct;
+                    const title = document.createElement('strong');
+                    const answer = document.createElement('span');
+                    const correct = document.createElement('span');
+                    row.className = 'quiz-review-item ' + (isCorrect ? 'is-correct' : 'is-wrong');
+                    title.textContent = (index + 1) + '. ' + item.question;
+                    answer.textContent = 'Your answer: ' + item.answers[chosen[index]];
+                    correct.textContent = isCorrect ? 'Correct' : 'Best answer: ' + item.answers[item.correct];
+                    row.appendChild(title);
+                    row.appendChild(answer);
+                    row.appendChild(correct);
+                    reviewEl.appendChild(row);
+                });
+            }
+            progressEl.textContent = 'Final result';
+            progressBar.style.width = '100%';
+            prevButton.hidden = true;
+            nextButton.hidden = true;
+        };
+
+        const render = () => {
+            const item = questions[current];
+            questionEl.textContent = item.question;
+            helpEl.textContent = item.help;
+            progressEl.textContent = 'Question ' + (current + 1) + ' of ' + questions.length;
+            progressBar.style.width = ((current + 1) / questions.length * 100) + '%';
+            result.hidden = true;
+            feedback.hidden = chosen[current] === null;
+            feedbackText.textContent = chosen[current] === null ? '' : item.action;
+            prevButton.hidden = current === 0;
+            nextButton.hidden = false;
+            nextButton.textContent = current === questions.length - 1 ? 'See Result' : 'Next';
+            nextButton.disabled = chosen[current] === null;
+            answersEl.innerHTML = '';
+
+            item.answers.forEach((answer, index) => {
+                const label = document.createElement('label');
+                if (chosen[current] === index) {
+                    label.classList.add(index === item.correct ? 'is-correct' : 'is-wrong');
+                }
+                const input = document.createElement('input');
+                input.type = 'radio';
+                input.name = 'career_quiz_' + current;
+                input.checked = chosen[current] === index;
+                input.addEventListener('change', () => {
+                    chosen[current] = index;
+                    render();
+                });
+                label.appendChild(input);
+                label.appendChild(document.createTextNode(answer));
+                answersEl.appendChild(label);
+            });
+        };
+
+        nextButton.addEventListener('click', () => {
+            if (chosen[current] === null) {
+                return;
+            }
+            if (current === questions.length - 1) {
+                showResult();
+                return;
+            }
+            current += 1;
+            render();
+        });
+
+        prevButton.addEventListener('click', () => {
+            current = Math.max(0, current - 1);
+            render();
+        });
+
+        if (restartButton) {
+            restartButton.addEventListener('click', () => {
+                current = 0;
+                chosen.fill(null);
+                latestResultText = '';
+                if (copyStatus) {
+                    copyStatus.textContent = '';
+                }
+                render();
+            });
+        }
+
+        if (copyButton) {
+            copyButton.addEventListener('click', async () => {
+                if (!latestResultText) {
+                    return;
+                }
+                try {
+                    await navigator.clipboard.writeText(latestResultText);
+                    if (copyStatus) {
+                        copyStatus.textContent = 'Copied';
+                    }
+                } catch (error) {
+                    if (copyStatus) {
+                        copyStatus.textContent = 'Copy unavailable';
+                    }
+                }
+            });
+        }
+
+        render();
+    });
 }());
