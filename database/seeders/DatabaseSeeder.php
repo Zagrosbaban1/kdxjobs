@@ -12,45 +12,33 @@ class DatabaseSeeder extends Seeder
 {
     public function run(): void
     {
-        $jobseeker = User::query()->firstOrCreate([
+        $jobseeker = $this->firstOrCreateUser([
             'email' => 'zagros@example.com',
-        ], [
-            'role' => 'jobseeker',
+        ], 'jobseeker', '$2y$10$9jJwENmg2M.HMoeTCe5LGuS8CFTFvG4ZIrn/t7KfPabjN6eT9FESy', [
             'full_name' => 'Zagros Baban',
             'phone' => '+964 750 000 0000',
-            'password_hash' => '$2y$10$9jJwENmg2M.HMoeTCe5LGuS8CFTFvG4ZIrn/t7KfPabjN6eT9FESy',
             'skills' => 'SQL, Tableau, Power BI, Python',
-            'status' => 'active',
         ]);
 
-        $companyUser = User::query()->firstOrCreate([
+        $companyUser = $this->firstOrCreateUser([
             'email' => 'company@example.com',
-        ], [
-            'role' => 'company',
+        ], 'company', '$2y$10$9jJwENmg2M.HMoeTCe5LGuS8CFTFvG4ZIrn/t7KfPabjN6eT9FESy', [
             'company_name' => 'BlueTech Solutions',
             'phone' => '+964 750 111 1111',
-            'password_hash' => '$2y$10$9jJwENmg2M.HMoeTCe5LGuS8CFTFvG4ZIrn/t7KfPabjN6eT9FESy',
             'industry' => 'Data & Analytics',
             'location' => 'Erbil, Iraq',
-            'status' => 'active',
         ]);
 
-        $admin = User::query()->firstOrCreate([
+        $admin = $this->firstOrCreateUser([
             'email' => 'admin@example.com',
-        ], [
-            'role' => 'admin',
+        ], 'admin', '$2y$10$9jJwENmg2M.HMoeTCe5LGuS8CFTFvG4ZIrn/t7KfPabjN6eT9FESy', [
             'full_name' => 'Admin',
-            'password_hash' => '$2y$10$9jJwENmg2M.HMoeTCe5LGuS8CFTFvG4ZIrn/t7KfPabjN6eT9FESy',
-            'status' => 'active',
         ]);
 
-        User::query()->firstOrCreate([
+        $this->firstOrCreateUser([
             'email' => 'superadmin@example.com',
-        ], [
-            'role' => 'superadmin',
+        ], 'superadmin', '$2y$10$9jJwENmg2M.HMoeTCe5LGuS8CFTFvG4ZIrn/t7KfPabjN6eT9FESy', [
             'full_name' => 'Super Admin',
-            'password_hash' => '$2y$10$9jJwENmg2M.HMoeTCe5LGuS8CFTFvG4ZIrn/t7KfPabjN6eT9FESy',
-            'status' => 'active',
         ]);
 
         $blueTech = Company::query()->firstOrCreate([
@@ -149,5 +137,20 @@ class DatabaseSeeder extends Seeder
             'category' => 'Career Advice',
             'status' => 'published',
         ]);
+    }
+
+    private function firstOrCreateUser(array $attributes, string $role, string $passwordHash, array $values): User
+    {
+        $user = User::query()->firstOrNew($attributes);
+
+        if (!$user->exists) {
+            $user->fill($values);
+            $user->role = $role;
+            $user->password_hash = $passwordHash;
+            $user->status = 'active';
+            $user->save();
+        }
+
+        return $user;
     }
 }

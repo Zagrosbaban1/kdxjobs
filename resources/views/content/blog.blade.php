@@ -23,4 +23,6 @@
             <div class="card">No published blog posts yet.</div>
         @endforelse
     </div>
+
+    @include('partials.pagination', ['paginator' => $posts])
 @endsection

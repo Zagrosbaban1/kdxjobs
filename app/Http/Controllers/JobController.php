@@ -29,7 +29,8 @@ class JobController extends Controller
                 });
             })
             ->latest('created_at')
-            ->get();
+            ->paginate(12)
+            ->withQueryString();
 
         $savedIds = Auth::check() && Auth::user()->role === 'jobseeker'
             ? SavedJob::query()->where('user_id', Auth::id())->pluck('job_id')->all()

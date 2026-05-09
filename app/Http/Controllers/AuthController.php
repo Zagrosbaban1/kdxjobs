@@ -9,6 +9,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Str;
 use Illuminate\View\View;
 
 class AuthController extends Controller
@@ -30,12 +32,25 @@ class AuthController extends Controller
             'password' => ['required', 'string'],
         ]);
 
+        $throttleKey = $this->loginThrottleKey($request, $data['email']);
+
+        if (RateLimiter::tooManyAttempts($throttleKey, 5)) {
+            $seconds = RateLimiter::availableIn($throttleKey);
+
+            return back()
+                ->withInput($request->except('password'))
+                ->with('error', "Too many login attempts. Please try again in {$seconds} seconds.");
+        }
+
         $user = User::query()->where('email', $data['email'])->first();
 
         if (!$user || $user->status !== 'active' || !Hash::check($data['password'], $user->password_hash)) {
+            RateLimiter::hit($throttleKey, 300);
+
             return back()->withInput($request->except('password'))->with('error', 'Invalid email or password.');
         }
 
+        RateLimiter::clear($throttleKey);
         Auth::login($user);
         $request->session()->regenerate();
 
@@ -54,7 +69,15 @@ class AuthController extends Controller
             'company_name' => ['nullable', 'string', 'max:180'],
             'email' => ['required', 'email', 'max:180', 'unique:users,email'],
             'phone' => ['nullable', 'string', 'max:60'],
-            'password' => ['required', 'string', 'min:6', 'confirmed'],
+            'password' => [
+                'required',
+                'string',
+                'min:10',
+                'regex:/[A-Z]/',
+                'regex:/[a-z]/',
+                'regex:/[0-9]/',
+                'confirmed',
+            ],
             'skills' => ['nullable', 'string'],
             'industry' => ['nullable', 'string', 'max:160'],
             'location' => ['nullable', 'string', 'max:180'],
@@ -69,18 +92,19 @@ class AuthController extends Controller
         }
 
         $user = DB::transaction(function () use ($data): User {
-            $user = User::query()->create([
-                'role' => $data['role'],
+            $user = new User([
                 'full_name' => $data['role'] === 'jobseeker' ? $data['full_name'] : null,
                 'company_name' => $data['role'] === 'company' ? $data['company_name'] : null,
                 'email' => $data['email'],
                 'phone' => $data['phone'] ?: null,
-                'password_hash' => Hash::make($data['password']),
                 'skills' => $data['skills'] ?: null,
                 'industry' => $data['industry'] ?: null,
                 'location' => $data['location'] ?: null,
-                'status' => 'active',
             ]);
+            $user->role = $data['role'];
+            $user->password_hash = Hash::make($data['password']);
+            $user->status = 'active';
+            $user->save();
 
             if ($data['role'] === 'company') {
                 Company::query()->create([
@@ -109,5 +133,10 @@ class AuthController extends Controller
         $request->session()->regenerateToken();
 
         return redirect()->route('home')->with('message', 'Logged out.');
+    }
+
+    private function loginThrottleKey(Request $request, string $email): string
+    {
+        return Str::lower($email) . '|' . $request->ip();
     }
 }

@@ -3,7 +3,6 @@
 namespace App\Http\Controllers;
 
 use App\Models\Application;
-use App\Models\BlogPost;
 use App\Models\Company;
 use App\Models\Job;
 use App\Models\SavedJob;
@@ -23,13 +22,15 @@ class DashboardController extends Controller
             ->with('job.company')
             ->where('user_id', $user->id)
             ->latest('created_at')
-            ->get();
+            ->paginate(10, ['*'], 'applications_page')
+            ->withQueryString();
 
         $savedJobs = SavedJob::query()
             ->with('job.company')
             ->where('user_id', $user->id)
             ->latest('created_at')
-            ->get();
+            ->paginate(10, ['*'], 'saved_jobs_page')
+            ->withQueryString();
 
         return view('dashboard.user', compact('applications', 'savedJobs'));
     }
@@ -38,23 +39,38 @@ class DashboardController extends Controller
     {
         $user = Auth::user();
         $company = Company::query()->where('user_id', $user->id)->firstOrFail();
-        $jobs = Job::query()->withCount('applications')->where('company_id', $company->id)->latest('created_at')->get();
+        $jobs = Job::query()
+            ->withCount('applications')
+            ->where('company_id', $company->id)
+            ->latest('created_at')
+            ->paginate(10, ['*'], 'jobs_page')
+            ->withQueryString();
         $applications = Application::query()
             ->with('job')
             ->whereHas('job', fn($query) => $query->where('company_id', $company->id))
             ->latest('created_at')
-            ->get();
+            ->paginate(10, ['*'], 'applications_page')
+            ->withQueryString();
 
         return view('dashboard.company', compact('company', 'jobs', 'applications'));
     }
 
     public function admin(): View
     {
-        $jobs = Job::query()->with('company')->latest('created_at')->get();
-        $applications = Application::query()->with('job.company')->latest('created_at')->get();
-        $users = User::query()->latest('created_at')->get();
-        $posts = BlogPost::query()->latest('created_at')->get();
-
+        $jobs = Job::query()
+            ->with('company')
+            ->latest('created_at')
+            ->paginate(10, ['*'], 'jobs_page')
+            ->withQueryString();
+        $applications = Application::query()
+            ->with('job.company')
+            ->latest('created_at')
+            ->paginate(10, ['*'], 'applications_page')
+            ->withQueryString();
+        $users = User::query()
+            ->latest('created_at')
+            ->paginate(10, ['*'], 'users_page')
+            ->withQueryString();
         $stats = [
             'users' => User::query()->count(),
             'companies' => Company::query()->count(),
@@ -62,7 +78,7 @@ class DashboardController extends Controller
             'applications' => Application::query()->count(),
         ];
 
-        return view('dashboard.admin', compact('jobs', 'applications', 'users', 'posts', 'stats'));
+        return view('dashboard.admin', compact('jobs', 'applications', 'users', 'stats'));
     }
 
     public function storeJob(Request $request): RedirectResponse

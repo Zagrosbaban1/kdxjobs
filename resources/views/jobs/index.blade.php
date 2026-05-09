@@ -57,4 +57,6 @@
             <div class="card">No jobs found.</div>
         @endforelse
     </div>
+
+    @include('partials.pagination', ['paginator' => $jobs])
 @endsection

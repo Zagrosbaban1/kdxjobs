@@ -52,6 +52,7 @@
                     @endforelse
                 </tbody>
             </table>
+            @include('partials.pagination', ['paginator' => $jobs])
         </section>
     </div>
 
@@ -83,5 +84,6 @@
                 @endforelse
             </tbody>
         </table>
+        @include('partials.pagination', ['paginator' => $applications])
     </section>
 @endsection

@@ -27,6 +27,7 @@
                     @endforelse
                 </tbody>
             </table>
+            @include('partials.pagination', ['paginator' => $applications])
         </section>
 
         <section class="card">
@@ -47,6 +48,7 @@
                     @endforelse
                 </tbody>
             </table>
+            @include('partials.pagination', ['paginator' => $savedJobs])
         </section>
     </div>
 @endsection

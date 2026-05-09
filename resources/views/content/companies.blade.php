@@ -19,4 +19,6 @@
             </article>
         @endforeach
     </div>
+
+    @include('partials.pagination', ['paginator' => $companies])
 @endsection

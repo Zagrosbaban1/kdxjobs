@@ -29,6 +29,7 @@
                     @endforeach
                 </tbody>
             </table>
+            @include('partials.pagination', ['paginator' => $users])
         </section>
 
         <section class="card">
@@ -45,6 +46,7 @@
                     @endforeach
                 </tbody>
             </table>
+            @include('partials.pagination', ['paginator' => $jobs])
         </section>
     </div>
 
@@ -62,5 +64,6 @@
                 @endforeach
             </tbody>
         </table>
+        @include('partials.pagination', ['paginator' => $applications])
     </section>
 @endsection

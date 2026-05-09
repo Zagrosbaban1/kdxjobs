@@ -13,11 +13,12 @@ class HomeController extends Controller
             ->with(['company', 'tags'])
             ->active()
             ->latest('created_at')
+            ->limit(6)
             ->get();
 
         $stats = [
             'openJobs' => Job::query()->active()->count(),
-            'companies' => $jobs->pluck('company_id')->unique()->count(),
+            'companies' => Job::query()->active()->distinct('company_id')->count('company_id'),
             'tags' => $jobs->pluck('tags')->flatten()->count(),
         ];
 
