@@ -70,28 +70,43 @@ function validate_api_password_strength(string $password): void
 function bootstrap(): never
 {
     $pdo = db();
+    $page = max(1, (int) ($_GET['page'] ?? 1));
+    $perPage = min(50, max(1, (int) ($_GET['per_page'] ?? 50)));
+    $offset = ($page - 1) * $perPage;
 
-    $jobs = $pdo->query(
+    $jobsStmt = $pdo->prepare(
         "SELECT j.*, c.name AS company, c.industry,
                 GROUP_CONCAT(t.tag ORDER BY t.tag SEPARATOR ',') AS tags
          FROM jobs j
          JOIN companies c ON c.id = j.company_id
          LEFT JOIN job_tags t ON t.job_id = j.id
+         WHERE j.status = 'active'
+           AND (j.expires_at IS NULL OR j.expires_at >= CURDATE())
          GROUP BY j.id
-         ORDER BY j.created_at DESC"
-    )->fetchAll();
+         ORDER BY j.created_at DESC
+         LIMIT :limit OFFSET :offset"
+    );
+    $jobsStmt->bindValue(':limit', $perPage, PDO::PARAM_INT);
+    $jobsStmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+    $jobsStmt->execute();
+    $jobs = $jobsStmt->fetchAll();
 
     foreach ($jobs as &$job) {
         $job['tags'] = $job['tags'] ? explode(',', $job['tags']) : [];
     }
 
-    $companies = $pdo->query(
+    $companiesStmt = $pdo->prepare(
         "SELECT c.*, COUNT(j.id) AS jobs
          FROM companies c
          LEFT JOIN jobs j ON j.company_id = c.id AND j.status = 'active'
          GROUP BY c.id
-         ORDER BY c.name"
-    )->fetchAll();
+         ORDER BY c.name
+         LIMIT :limit OFFSET :offset"
+    );
+    $companiesStmt->bindValue(':limit', $perPage, PDO::PARAM_INT);
+    $companiesStmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+    $companiesStmt->execute();
+    $companies = $companiesStmt->fetchAll();
 
     $stats = [
         'openJobs' => (int) $pdo->query("SELECT COUNT(*) FROM jobs WHERE status = 'active'")->fetchColumn(),
@@ -106,6 +121,12 @@ function bootstrap(): never
         'jobs' => $jobs,
         'companies' => $companies,
         'stats' => $stats,
+        'pagination' => [
+            'page' => $page,
+            'perPage' => $perPage,
+            'jobsTotal' => (int) $pdo->query("SELECT COUNT(*) FROM jobs WHERE status = 'active' AND (expires_at IS NULL OR expires_at >= CURDATE())")->fetchColumn(),
+            'companiesTotal' => (int) $pdo->query('SELECT COUNT(*) FROM companies')->fetchColumn(),
+        ],
     ]);
 }
 

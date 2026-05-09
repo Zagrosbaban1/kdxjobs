@@ -715,6 +715,45 @@ function service_chat_messages(PDO $pdo, int $applicationId): array
     return $stmt->fetchAll();
 }
 
+function load_application_activity(PDO $pdo, array $applicationIds): array
+{
+    $applicationIds = array_values(array_unique(array_filter(array_map('intval', $applicationIds), static fn(int $id): bool => $id > 0)));
+    if (!$applicationIds) {
+        return [[], [], []];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($applicationIds), '?'));
+    $eventsByApplication = [];
+    $interviewsByApplication = [];
+    $messagesByApplication = [];
+
+    $eventStmt = $pdo->prepare("SELECT * FROM application_events WHERE application_id IN ({$placeholders}) ORDER BY created_at ASC");
+    $eventStmt->execute($applicationIds);
+    foreach ($eventStmt->fetchAll() as $event) {
+        $eventsByApplication[(int) $event['application_id']][] = $event;
+    }
+
+    $interviewStmt = $pdo->prepare("SELECT * FROM interviews WHERE application_id IN ({$placeholders}) ORDER BY scheduled_at ASC");
+    $interviewStmt->execute($applicationIds);
+    foreach ($interviewStmt->fetchAll() as $interview) {
+        $interviewsByApplication[(int) $interview['application_id']][] = $interview;
+    }
+
+    $messageStmt = $pdo->prepare(
+        "SELECT sm.*, u.full_name, u.company_name
+         FROM service_messages sm
+         LEFT JOIN users u ON u.id = sm.sender_id
+         WHERE sm.application_id IN ({$placeholders})
+         ORDER BY sm.created_at ASC"
+    );
+    $messageStmt->execute($applicationIds);
+    foreach ($messageStmt->fetchAll() as $message) {
+        $messagesByApplication[(int) $message['application_id']][] = $message;
+    }
+
+    return [$eventsByApplication, $interviewsByApplication, $messagesByApplication];
+}
+
 function field(string $name, ?string $default = ''): string
 {
     return trim((string) ($_POST[$name] ?? $default));
@@ -2376,16 +2415,6 @@ if ($pdo) {
         $notifications = $notificationStmt->fetchAll();
     }
 
-    foreach ($pdo->query('SELECT * FROM application_events ORDER BY created_at ASC')->fetchAll() as $event) {
-        $applicationEventsByApplication[(int) $event['application_id']][] = $event;
-    }
-    foreach ($pdo->query('SELECT * FROM interviews ORDER BY scheduled_at ASC')->fetchAll() as $interview) {
-        $interviewsByApplication[(int) $interview['application_id']][] = $interview;
-    }
-    foreach ($pdo->query('SELECT sm.*, u.full_name, u.company_name FROM service_messages sm LEFT JOIN users u ON u.id = sm.sender_id ORDER BY sm.created_at ASC')->fetchAll() as $chatMessage) {
-        $serviceMessagesByApplication[(int) $chatMessage['application_id']][] = $chatMessage;
-    }
-
     $analytics = [
         'statuses' => $pdo->query('SELECT status, COUNT(*) AS total FROM applications GROUP BY status ORDER BY total DESC')->fetchAll(),
         'locations' => $pdo->query("SELECT location, COUNT(*) AS total FROM jobs WHERE status = 'active' GROUP BY location ORDER BY total DESC LIMIT 5")->fetchAll(),
@@ -2644,6 +2673,14 @@ if ($page === 'application' && $user) {
         $page = 'home';
         $error = $error ?: 'That application could not be found or you do not have permission to view it.';
     }
+}
+
+if ($pdo && $selectedApplication) {
+    [
+        $applicationEventsByApplication,
+        $interviewsByApplication,
+        $serviceMessagesByApplication,
+    ] = load_application_activity($pdo, [(int) $selectedApplication['id']]);
 }
 
 function app_url(string $page, array $extra = []): string
@@ -6882,6 +6919,20 @@ $userStatusCounts = array_count_values(array_map(static fn(array $application): 
 $profileGaps = $isUser && $user ? profile_missing_items($user) : [];
 $nextApplication = $isUser ? ($userApplications[0] ?? null) : null;
 $recommendedJobs = $isUser && $user ? recommended_jobs_for_user($allJobs, $user, $userApplications, $savedJobIds, 4) : [];
+if ($pdo) {
+    $activityApplicationIds = array_map(static fn(array $application): int => (int) ($application['id'] ?? 0), $pagedDashboardApplications);
+    if ($nextApplication) {
+        $activityApplicationIds[] = (int) ($nextApplication['id'] ?? 0);
+    }
+    foreach (array_slice($isCompany ? $companyApplications : $recruiterApplications, 0, 6) as $application) {
+        $activityApplicationIds[] = (int) ($application['id'] ?? 0);
+    }
+    [
+        $applicationEventsByApplication,
+        $interviewsByApplication,
+        $serviceMessagesByApplication,
+    ] = load_application_activity($pdo, $activityApplicationIds);
+}
 $dashboardMenu = $isUser
     ? ['overview' => 'Overview', 'profile' => 'Profile', 'applications' => 'My Applications', 'saved' => 'Saved Jobs', 'saved_searches' => 'Saved Searches', 'settings' => 'Settings']
         : ($isCompany
