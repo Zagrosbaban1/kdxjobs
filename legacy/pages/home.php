@@ -1,14 +1,14 @@
-<?php if ($page === 'home'): ?>
+﻿<?php if ($page === 'home'): ?>
 <section class="hero">
     <div class="orb"></div>
     <div class="wrap hero-grid">
         <div>
-            <span class="pill">🛡️ <?= h(tr('hero.pill', 'Smart Recruitment Platform')) ?></span>
+            <span class="pill"><span class="ui-mark">AI</span> <?= h(tr('hero.pill', 'Smart Recruitment Platform')) ?></span>
             <h1><?= h(tr('hero.title', 'Find the right job. Hire the right talent.')) ?></h1>
             <p class="lead"><?= h(tr('hero.lead', 'A clean recruitment website for job seekers, companies, and admins, built with modern profiles, dashboards, applications, and job management.')) ?></p>
             <form class="search" method="get">
 	            <input type="hidden" name="page" value="jobs">
-                <div class="search-inner"><span>🔍</span><input name="q" value="<?= h($search) ?>" placeholder="<?= h(tr('hero.search_placeholder', 'Search job title, company, or skill')) ?>"></div>
+                <div class="search-inner"><span class="search-mark" aria-hidden="true"></span><input name="q" value="<?= h($search) ?>" placeholder="<?= h(tr('hero.search_placeholder', 'Search job title, company, or skill')) ?>"></div>
                 <button class="btn"><?= h(tr('hero.find_jobs', 'Find Jobs')) ?></button>
             </form>
             <div class="hero-actions">
@@ -19,9 +19,9 @@
         <div class="card hero-panel">
             <div class="panel-inner">
                 <div class="grid">
-                    <div class="card stat"><span class="icon">💼</span><div><div class="tiny muted"><?= h(tr('stats.open_jobs', 'Open Jobs')) ?></div><div class="stat-value"><?= h($stats['openJobs']) ?></div></div></div>
-                    <div class="card stat"><span class="icon">🏢</span><div><div class="tiny muted"><?= h(tr('stats.companies', 'Companies')) ?></div><div class="stat-value"><?= h($stats['companies']) ?></div></div></div>
-                    <div class="card stat"><span class="icon">👥</span><div><div class="tiny muted"><?= h(tr('stats.job_seekers', 'Job Seekers')) ?></div><div class="stat-value"><?= h($stats['jobSeekers']) ?></div></div></div>
+                    <div class="card stat"><span class="icon icon-briefcase" aria-hidden="true"></span><div><div class="tiny muted"><?= h(tr('stats.open_jobs', 'Open Jobs')) ?></div><div class="stat-value"><?= h($stats['openJobs']) ?></div></div></div>
+                    <div class="card stat"><span class="icon icon-company" aria-hidden="true"></span><div><div class="tiny muted"><?= h(tr('stats.companies', 'Companies')) ?></div><div class="stat-value"><?= h($stats['companies']) ?></div></div></div>
+                    <div class="card stat"><span class="icon icon-people" aria-hidden="true"></span><div><div class="tiny muted"><?= h(tr('stats.job_seekers', 'Job Seekers')) ?></div><div class="stat-value"><?= h($stats['jobSeekers']) ?></div></div></div>
                 </div>
                 <div class="card card-pad" style="margin-top:24px">
                     <h3 style="margin-bottom:16px"><?= h(tr('home.latest_applicants', 'Latest Applicants')) ?></h3>
@@ -44,14 +44,14 @@
             <div class="pipeline-track" aria-hidden="true">
                 <div class="pipeline-line"></div>
                 <div class="pipeline-stage"><div class="pipeline-node">CV</div><small><?= h(tr('pipeline.profile', 'Profile')) ?></small></div>
-                <div class="pipeline-stage"><div class="pipeline-node">✓</div><small><?= h(tr('pipeline.review', 'Review')) ?></small></div>
-                <div class="pipeline-stage"><div class="pipeline-node">★</div><small><?= h(tr('pipeline.shortlist', 'Shortlist')) ?></small></div>
+                <div class="pipeline-stage"><div class="pipeline-node">OK</div><small><?= h(tr('pipeline.review', 'Review')) ?></small></div>
+                <div class="pipeline-stage"><div class="pipeline-node">SL</div><small><?= h(tr('pipeline.shortlist', 'Shortlist')) ?></small></div>
                 <div class="pipeline-stage"><div class="pipeline-node">Q</div><small><?= h(tr('pipeline.interview', 'Interview')) ?></small></div>
-                <div class="pipeline-stage"><div class="pipeline-node">↗</div><small><?= h(tr('pipeline.offer', 'Offer')) ?></small></div>
+                <div class="pipeline-stage"><div class="pipeline-node">GO</div><small><?= h(tr('pipeline.offer', 'Offer')) ?></small></div>
                 <span class="candidate-dot"></span>
                 <span class="candidate-dot two"></span>
                 <span class="candidate-dot three"></span>
-                <div class="offer-card"><i>✓</i> <?= h(tr('pipeline.matched', 'Candidate matched')) ?></div>
+                <div class="offer-card"><i>OK</i> <?= h(tr('pipeline.matched', 'Candidate matched')) ?></div>
             </div>
         </div>
     </div>
@@ -117,28 +117,28 @@
                     <div class="tracking-line"></div>
                     <div class="tracking-pulse"></div>
                     <div class="tracking-step">
-                        <div class="tracking-node">✉</div>
+                        <div class="tracking-node">01</div>
                         <div class="tracking-card">
                             <strong>Applied with clarity</strong>
                             <span>Your application is received and instantly visible inside your journey.</span>
                         </div>
                     </div>
                     <div class="tracking-step">
-                        <div class="tracking-node">👀</div>
+                        <div class="tracking-node">02</div>
                         <div class="tracking-card">
                             <strong>Reviewed with transparency</strong>
                             <span>You can see when your application is reviewed instead of wondering in silence.</span>
                         </div>
                     </div>
                     <div class="tracking-step">
-                        <div class="tracking-node">💬</div>
+                        <div class="tracking-node">03</div>
                         <div class="tracking-card support">
                             <strong>Guided with real support</strong>
                             <span>Interview notes, follow-ups, and service chat keep you informed in every detail.</span>
                         </div>
                     </div>
                     <div class="tracking-step" style="margin-bottom:0">
-                        <div class="tracking-node">♥</div>
+                        <div class="tracking-node">04</div>
                         <div class="tracking-card care">
                             <strong>Different because we care</strong>
                             <span>We are not just a recruiting board. We stay beside you until the next step becomes clear.</span>

@@ -1,4 +1,4 @@
-@extends('layouts.app')
+﻿@extends('layouts.app')
 
 @section('content')
     <div class="section-head">
@@ -15,7 +15,7 @@
                 <span class="badge">{{ $post->category ?: 'Career Advice' }}</span>
                 <h3 style="margin-top: 14px;">{{ $post->title }}</h3>
                 <p class="muted tiny" style="margin-top: 10px;">
-                    {{ $post->author?->full_name ?: 'KDXJobs Team' }} · {{ $post->created_at?->format('M j, Y') }}
+                    {{ $post->author?->full_name ?: 'KDXJobs Team' }} &middot; {{ $post->created_at?->format('M j, Y') }}
                 </p>
                 <p style="margin-top: 16px;">{{ $post->excerpt ?: \Illuminate\Support\Str::limit(strip_tags($post->content), 180) }}</p>
             </article>

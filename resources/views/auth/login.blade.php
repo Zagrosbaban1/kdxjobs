@@ -17,6 +17,7 @@
                 <label class="label">Password
                     <input class="input" type="password" name="password" required>
                 </label>
+                <a class="tiny" href="{{ route('password.request') }}">Forgot password?</a>
                 <button class="btn primary" type="submit">Login</button>
             </form>
         </section>

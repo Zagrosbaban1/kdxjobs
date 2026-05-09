@@ -2973,7 +2973,7 @@ function job_edit_form(array $job, array $companies, bool $canChangeCompany = tr
                     <button type="button" data-command="bold" title="Bold">B</button>
                     <button type="button" data-command="italic" title="Italic">I</button>
                     <button type="button" data-command="underline" title="Underline">U</button>
-                    <button type="button" data-command="insertUnorderedList" title="Bullet list">•</button>
+                    <button type="button" data-command="insertUnorderedList" title="Bullet list">List</button>
                     <button type="button" data-command="insertOrderedList" title="Numbered list">1.</button>
                     <button type="button" data-command="formatBlock" data-value="p" title="Paragraph">P</button>
                 </div>
@@ -3279,7 +3279,7 @@ function applications_browser_controls(string $page, string $tab, string $query,
     <form class="application-toolbar" method="get">
         <input type="hidden" name="page" value="<?= h($page) ?>">
         <input type="hidden" name="tab" value="<?= h($tab) ?>">
-        <div class="search-inner"><span>🔍</span><input name="applications_q" value="<?= h($query) ?>" placeholder="AI search: strong SQL Power BI bachelor, weak fit, same email"></div>
+        <div class="search-inner"><span class="search-mark" aria-hidden="true"></span><input name="applications_q" value="<?= h($query) ?>" placeholder="AI search: strong SQL Power BI bachelor, weak fit, same email"></div>
         <select class="select" name="applications_status">
             <option value="">All statuses</option>
             <?php foreach ($statusOptions as $statusOption): ?>
@@ -4279,7 +4279,7 @@ function experience_date_to_month_index(string $month, string $year): ?int
 function detect_experience_months_from_date_ranges(string $text): int
 {
     $monthPattern = '(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)';
-    $separator = '\s*(?:-|–|—|to|until|till)\s*';
+    $separator = '\s*(?:-|to|until|till)\s*';
     $currentMonth = ((int) date('Y') * 12) + (int) date('n');
     $ranges = [];
     $patterns = [
@@ -4354,7 +4354,7 @@ function detect_experience_months_from_date_ranges(string $text): int
 function detect_experience_ranges_with_context(string $text): array
 {
     $monthPattern = '(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)';
-    $separator = '\s*(?:[^\w\s]{1,3}|to|until|till)\s*';
+    $separator = '\s*(?:-|to|until|till)\s*';
     $currentMonth = ((int) date('Y') * 12) + (int) date('n');
     $ranges = [];
     $patterns = [
@@ -4769,7 +4769,7 @@ function detect_recent_roles(string $text): array
     $roles = [];
     $roleWords = 'Manager|Specialist|Analyst|Developer|Officer|Coordinator|Assistant|Engineer|Recruiter|Accountant|Supervisor|Consultant|Administrator';
     $months = 'Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?';
-    $pattern = '/\b([A-Z][A-Za-z&\/, ]{2,90}(?:' . $roleWords . ')[A-Za-z&\/, ]{0,70})\s+([A-Z][A-Za-z0-9&., ]{2,80})\s+\|\s*([A-Za-z ]{2,40})\s+\|\s*((?:' . $months . ')\s+\d{4}\s*(?:[-–—]\s*(?:Present|Current|(?:' . $months . ')\s+\d{4}))?)/i';
+    $pattern = '/\b([A-Z][A-Za-z&\/, ]{2,90}(?:' . $roleWords . ')[A-Za-z&\/, ]{0,70})\s+([A-Z][A-Za-z0-9&., ]{2,80})\s+\|\s*([A-Za-z ]{2,40})\s+\|\s*((?:' . $months . ')\s+\d{4}\s*(?:[-]\s*(?:Present|Current|(?:' . $months . ')\s+\d{4}))?)/i';
 
     if (preg_match_all($pattern, $text, $matches, PREG_SET_ORDER)) {
         foreach ($matches as $match) {
@@ -5832,7 +5832,7 @@ function candidate_match_html(array $application, bool $inlineDetails = true, st
     if (!empty($match['ai_model'])) {
         $modelLine = (string) $match['ai_model'];
         if (!empty($match['ai_confidence'])) {
-            $modelLine .= ' · Confidence: ' . (string) $match['ai_confidence'];
+            $modelLine .= ' - Confidence: ' . (string) $match['ai_confidence'];
         }
         $insightParts[] = '<p><strong>AI Model:</strong> ' . h($modelLine) . '</p>';
     }
@@ -5891,7 +5891,7 @@ function candidate_match_html(array $application, bool $inlineDetails = true, st
     return '<div class="match-score ' . h($class) . '">'
         . '<span class="tiny muted">AI CV Match</span>'
         . '<strong>' . h((string) $score) . '%</strong>'
-        . '<span class="tiny muted">' . h($fitLabel) . ' · ' . h(ai_matching_mode_label((string) ($match['matching_mode'] ?? ai_matching_mode()))) . ' mode</span>'
+        . '<span class="tiny muted">' . h($fitLabel) . ' - ' . h(ai_matching_mode_label((string) ($match['matching_mode'] ?? ai_matching_mode()))) . ' mode</span>'
         . '<div class="score-bar"><span style="width:' . h((string) $score) . '%"></span></div>'
         . ($recruiterSummary !== '' ? '<p class="recruiter-summary">' . h($recruiterSummary) . '</p>' : '')
         . '<div class="match-mini-summary"><span>' . h((string) $matchCount) . ' matched</span><span>' . h((string) $missingCount) . ' gaps</span><span>' . h($experienceLine) . '</span></div>'
@@ -5974,7 +5974,7 @@ function applications_table(array $applications, string $page, string $applicati
     <form class="search" method="get" style="margin:0 0 20px">
         <input type="hidden" name="page" value="<?= h($page) ?>">
         <input type="hidden" name="tab" value="manage">
-        <div class="search-inner"><span>🔍</span><input name="app_q" value="<?= h($applicationSearch) ?>" placeholder="Search applicant, email, job, company, or status"></div>
+        <div class="search-inner"><span class="search-mark" aria-hidden="true"></span><input name="app_q" value="<?= h($applicationSearch) ?>" placeholder="Search applicant, email, job, company, or status"></div>
         <button class="btn">Search</button>
         <?php if ($applicationSearch !== ''): ?><a class="btn outline" href="<?= h(app_url($page, ['tab' => 'manage'])) ?>">Clear</a><?php endif; ?>
     </form>
@@ -5990,7 +5990,7 @@ function applications_table(array $applications, string $page, string $applicati
                 <?php foreach ($applications as $a): ?>
                     <tr>
                         <td class="applicant-cell"><div class="table-primary"><a href="<?= h(application_page_url($a, $page, 'manage')) ?>"><?= h($a['applicant_name']) ?></a></div><div class="table-secondary"><?= h($a['applicant_email']) ?></div></td>
-                        <td><?= h($a['job_title']) ?><br><span class="tiny muted"><?= h($a['company']) ?><?= !empty($a['recruiter_name']) ? ' · Recruiter: ' . h($a['recruiter_name']) : '' ?></span></td>
+                        <td><?= h($a['job_title']) ?><br><span class="tiny muted"><?= h($a['company']) ?><?= !empty($a['recruiter_name']) ? ' - Recruiter: ' . h($a['recruiter_name']) : '' ?></span></td>
                         <td class="match-cell"><?= candidate_match_html($a, false, $page, 'manage') ?></td>
                         <td class="cv-cell"><?= cv_link_html($a['cv_file'] ?? null, 'View CV') ?></td>
                         <td class="status-cell"><span class="status-pill <?= h(status_class($a['status'])) ?>"><?= h($a['status']) ?></span></td>
@@ -6045,7 +6045,7 @@ function applications_hiring_table(array $applications, string $page, string $re
                                     <?php endif; ?>
                                     <div class="table-tertiary">
                                         <?= cv_link_html($a['cv_file'] ?? null, 'View CV') ?>
-                                        <?php if (!empty($a['applicant_phone'])): ?> · <?= h($a['applicant_phone']) ?><?php endif; ?>
+                                        <?php if (!empty($a['applicant_phone'])): ?> - <?= h($a['applicant_phone']) ?><?php endif; ?>
                                     </div>
                                 </div>
                             </div>
@@ -6055,7 +6055,7 @@ function applications_hiring_table(array $applications, string $page, string $re
                             <div class="table-secondary"><?= h($a['company']) ?></div>
                             <div class="table-tertiary">
                                 <?= h($a['role'] ?? ($a['job_title'] ?? '')) ?>
-                                <?php if (!empty($a['recruiter_name'])): ?> · Recruiter: <?= h($a['recruiter_name']) ?><?php endif; ?>
+                                <?php if (!empty($a['recruiter_name'])): ?> - Recruiter: <?= h($a['recruiter_name']) ?><?php endif; ?>
                             </div>
                         </td>
                         <td class="match-cell">
@@ -6106,7 +6106,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
     <form class="search" method="get" style="margin:0 0 20px">
         <input type="hidden" name="page" value="<?= h($page) ?>">
         <input type="hidden" name="tab" value="<?= h($tab) ?>">
-        <div class="search-inner"><span>🔍</span><input name="job_q" value="<?= h($jobSearch) ?>" placeholder="Search title, company, location, type, status, or tags"></div>
+        <div class="search-inner"><span class="search-mark" aria-hidden="true"></span><input name="job_q" value="<?= h($jobSearch) ?>" placeholder="Search title, company, location, type, status, or tags"></div>
         <button class="btn">Search</button>
         <?php if ($jobSearch !== ''): ?><a class="btn outline" href="<?= h($clearUrl) ?>">Clear</a><?php endif; ?>
     </form>
@@ -6212,7 +6212,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
             <aside class="card card-pad job-action-panel">
                 <a class="btn outline" style="width:100%;margin-bottom:18px" href="<?= h(app_url('jobs')) ?>">Back to Jobs</a>
                 <div class="job-top">
-                    <span class="icon">ðŸ’¼</span>
+                    <span class="icon icon-briefcase" aria-hidden="true"></span>
                     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end">
                         <span class="badge"><?= h($selectedJob['type']) ?></span>
                         <?php if (($user['role'] ?? '') === 'jobseeker'): ?>
@@ -6221,7 +6221,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                                 <?= csrf_input() ?>
                                 <input type="hidden" name="action" value="toggle_saved_job">
                                 <input type="hidden" name="job_id" value="<?= h((string) $selectedJob['id']) ?>">
-                                <input type="hidden" name="save_state" value="<?= $selectedJobSaved ? 'saved' : 'new' ?>">
+                        <input type="hidden" name="save_state" value="<?= $selectedJobSaved ? 'saved' : 'new' ?>">
                                 <input type="hidden" name="redirect_page" value="jobs">
                                 <button class="btn <?= $selectedJobSaved ? 'outline' : 'dark' ?>"><?= $selectedJobSaved ? 'Saved' : 'Save Job' ?></button>
                             </form>
@@ -6231,8 +6231,8 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                 <h3><?= h($selectedJob['title']) ?></h3>
                 <p style="margin:.35rem 0 0;font-weight:800;color:#475569"><?= h($selectedJob['company']) ?></p>
                 <div class="job-meta">
-                    <div>ðŸ“ <?= h($selectedJob['location']) ?></div>
-                    <div>ðŸ’° <?= h($selectedJob['salary']) ?></div>
+                    <div><span class="meta-mark">LOC</span> <?= h($selectedJob['location']) ?></div>
+                    <div><span class="meta-mark">PAY</span> <?= h($selectedJob['salary']) ?></div>
                 </div>
                 <div class="job-side-facts">
                     <div><span>Status</span><strong><?= h(ucfirst($selectedJobListingStatus)) ?></strong></div>
@@ -6270,7 +6270,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                         <input type="hidden" name="job_id" value="<?= h((string) $selectedJob['id']) ?>">
                         <input type="hidden" name="save_state" value="<?= $selectedJobSaved ? 'saved' : 'new' ?>">
                         <input type="hidden" name="redirect_page" value="jobs">
-                        <button class="btn <?= $selectedJobSaved ? 'outline' : 'dark' ?>" style="width:100%"><?= $selectedJobSaved ? 'Saved ✓' : '☆ Save Job' ?></button>
+                        <button class="btn <?= $selectedJobSaved ? 'outline' : 'dark' ?>" style="width:100%"><span><?= $selectedJobSaved ? 'Saved' : 'Save Job' ?></span></button>
                     </form>
                 <?php endif; ?>
             </aside>
@@ -6483,7 +6483,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
             <?php if ($minSalary > 0): ?><input type="hidden" name="min_salary" value="<?= h((string) $minSalary) ?>"><?php endif; ?>
             <?php if ($maxSalary > 0): ?><input type="hidden" name="max_salary" value="<?= h((string) $maxSalary) ?>"><?php endif; ?>
             <input type="hidden" name="sort" value="<?= h($jobSort) ?>">
-            <div class="search-inner"><span>🔍</span><input name="q" value="<?= h($search) ?>" placeholder="<?= h(tr('hero.search_placeholder', 'Search job title, company, or skill')) ?>"></div>
+            <div class="search-inner"><span class="search-mark" aria-hidden="true"></span><input name="q" value="<?= h($search) ?>" placeholder="<?= h(tr('hero.search_placeholder', 'Search job title, company, or skill')) ?>"></div>
             <button class="btn"><?= h(tr('common.search', 'Search')) ?></button>
             <?php if ($search !== ''): ?><a class="btn outline" href="<?= h(app_url('jobs')) ?>"><?= h(tr('common.clear', 'Clear')) ?></a><?php endif; ?>
         </form>
@@ -6551,7 +6551,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
         <div class="section-title"><p class="eyebrow">Companies</p><h2>Top companies hiring now</h2><p>Each company has its own profile, logo, industry, location, and active jobs.</p></div>
         <div class="grid grid3">
             <?php foreach ($companies as $c): ?>
-            <div class="card job-card card-pad"><span class="icon">🏢</span><h3 style="margin-top:20px"><?= h($c['name']) ?></h3><p class="muted"><?= h($c['industry']) ?></p><p class="badge" style="border-radius:16px;padding:12px 16px"><?= h((string)$c['jobs']) ?> active jobs</p><a class="btn" style="width:100%;margin-top:20px" href="<?= h(app_url('jobs')) ?>">View Company</a></div>
+            <div class="card job-card card-pad"><span class="icon icon-company" aria-hidden="true"></span><h3 style="margin-top:20px"><?= h($c['name']) ?></h3><p class="muted"><?= h($c['industry']) ?></p><p class="badge" style="border-radius:16px;padding:12px 16px"><?= h((string)$c['jobs']) ?> active jobs</p><a class="btn" style="width:100%;margin-top:20px" href="<?= h(app_url('jobs')) ?>">View Company</a></div>
             <?php endforeach; ?>
         </div>
     </div>
@@ -6745,7 +6745,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                 <label class="label">Industry<input class="input" required name="industry" placeholder="Technology, FMCG, Finance..."></label>
                 <label class="label">Location<input class="input" required name="location" placeholder="Erbil, Baghdad, Remote..."></label>
                 <label class="label">Password<input class="input" required type="password" name="password" placeholder="password"></label>
-                <div class="upload"><div style="font-size:28px">⬆️</div><strong>Upload Company Logo</strong><br><span class="tiny muted">PNG or JPG placeholder</span></div>
+                <div class="upload"><div class="upload-mark">UP</div><strong>Upload Company Logo</strong><br><span class="tiny muted">PNG or JPG placeholder</span></div>
                 <button class="btn" style="width:100%">Create Account</button>
             </form>
             <?php else: ?>
@@ -6754,7 +6754,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                 <input type="hidden" name="action" value="login">
                 <label class="label">Email<input class="input" required type="email" name="email" placeholder="example@email.com"></label>
                 <label class="label">Password<input class="input" required type="password" name="password" placeholder="password"></label>
-                <p style="text-align:right;color:#0284c7;font-weight:800">Forgot password?</p>
+                <a href="<?= h(app_base_path() . '/forgot-password') ?>" style="display:block;text-align:right;color:#0284c7;font-weight:800">Forgot password?</a>
                 <button class="btn" style="width:100%">Login</button>
             </form>
             <?php endif; ?>
@@ -7035,7 +7035,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
             <aside class="card side">
                 <div class="side-user"><?= profile_photo_html($user['profile_photo'] ?? null, (string) $displayName, 'profile-photo side-photo') ?><div><strong><?= h((string) $displayName) ?></strong><br><span class="tiny muted"><?= $isUser ? 'Data Analyst' : ($isCompany ? 'Tech Company' : (is_super_admin() ? 'Super Admin' : 'Recruiter Admin')) ?></span></div></div>
                 <?php foreach ($dashboardMenu as $key => $item): ?>
-                    <a class="side-btn <?= $tab === $key ? 'active' : '' ?>" href="<?= h(app_url($page, ['tab' => $key])) ?>">⚙️ <?= h($item) ?></a>
+                    <a class="side-btn <?= $tab === $key ? 'active' : '' ?>" href="<?= h(app_url($page, ['tab' => $key])) ?>">?? <?= h($item) ?></a>
                 <?php endforeach; ?>
             </aside>
             <main class="grid dashboard-main">
@@ -7058,9 +7058,9 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                     </div>
                 <?php endif; ?>
                 <div class="grid grid3">
-                    <div class="card stat"><span class="icon">💼</span><div><span class="tiny muted"><?= $isUser ? 'Applied Jobs' : ($isCompany ? 'Active Jobs' : 'Assigned Jobs') ?></span><div class="stat-value"><?= $isUser ? h((string) count($userApplications)) : ($isCompany ? h((string) count($companyJobs)) : h((string) count($recruiterJobs))) ?></div></div></div>
-                    <div class="card stat"><span class="icon"><?= $isUser ? '⭐' : ($isCompany ? '👥' : '🏢') ?></span><div><span class="tiny muted"><?= $isUser ? 'Saved Jobs' : ($isCompany ? 'Applicants' : 'My Applications') ?></span><div class="stat-value"><?= $isUser ? h((string) count($savedJobs)) : ($isCompany ? h((string) count($companyApplications)) : h((string) count($recruiterApplications))) ?></div></div></div>
-                    <div class="card stat"><span class="icon">📊</span><div><span class="tiny muted"><?= $isUser ? 'Profile Score' : ($isCompany ? 'Profile Score' : 'Open Jobs') ?></span><div class="stat-value"><?= ($isUser || $isCompany) ? h((string) $profileScore) . '%' : h($stats['openJobs']) ?></div><?php if ($isUser || $isCompany): ?><div class="score-bar"><span style="width:<?= h((string) $profileScore) ?>%"></span></div><?php endif; ?></div></div>
+                    <div class="card stat"><span class="icon icon-briefcase" aria-hidden="true"></span><div><span class="tiny muted"><?= $isUser ? 'Applied Jobs' : ($isCompany ? 'Active Jobs' : 'Assigned Jobs') ?></span><div class="stat-value"><?= $isUser ? h((string) count($userApplications)) : ($isCompany ? h((string) count($companyJobs)) : h((string) count($recruiterJobs))) ?></div></div></div>
+                    <div class="card stat"><span class="icon icon-people" aria-hidden="true"></span><div><span class="tiny muted"><?= $isUser ? 'Saved Jobs' : ($isCompany ? 'Applicants' : 'My Applications') ?></span><div class="stat-value"><?= $isUser ? h((string) count($savedJobs)) : ($isCompany ? h((string) count($companyApplications)) : h((string) count($recruiterApplications))) ?></div></div></div>
+                    <div class="card stat"><span class="icon icon-chart" aria-hidden="true"></span><div><span class="tiny muted"><?= $isUser ? 'Profile Score' : ($isCompany ? 'Profile Score' : 'Open Jobs') ?></span><div class="stat-value"><?= ($isUser || $isCompany) ? h((string) $profileScore) . '%' : h($stats['openJobs']) ?></div><?php if ($isUser || $isCompany): ?><div class="score-bar"><span style="width:<?= h((string) $profileScore) ?>%"></span></div><?php endif; ?></div></div>
                 </div>
                 <div class="card card-pad dashboard-content-card">
                     <div style="display:flex;justify-content:space-between;gap:16px;margin-bottom:20px">
@@ -7144,7 +7144,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                                                 <div>
                                                     <strong><?= h($job['title'] ?? 'Job') ?></strong>
                                                     <span><?= h($job['company'] ?? '') ?> - <?= h($job['location'] ?? '') ?></span>
-                                                    <small><?= h($job['_recommendation_summary'] ?? 'Recommended') ?> · <?= h((string) ($job['_recommendation_matched_skills'] ?? 0)) ?> skills matched</small>
+                                                    <small><?= h($job['_recommendation_summary'] ?? 'Recommended') ?> - <?= h((string) ($job['_recommendation_matched_skills'] ?? 0)) ?> skills matched</small>
                                                 </div>
                                                 <b><?= h((string) ($job['_recommendation_score'] ?? 0)) ?>%</b>
                                             </a>
@@ -7444,7 +7444,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                             <?php endif; ?>
                             <?php foreach ($savedJobs as $job): ?>
                                 <div class="applicant">
-                                    <div><strong><?= h($job['title']) ?></strong><br><span class="tiny muted"><?= h($job['company']) ?> · <?= h($job['location']) ?></span></div>
+                                    <div><strong><?= h($job['title']) ?></strong><br><span class="tiny muted"><?= h($job['company']) ?> &middot; <?= h($job['location']) ?></span></div>
                                     <div style="display:flex;gap:10px;flex-wrap:wrap">
                                         <a class="btn outline" href="<?= h(job_detail_url($job)) ?>">View</a>
                                         <form method="post">
@@ -7470,10 +7470,10 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                                     <div>
                                         <strong><?= h($savedSearch['query_text'] ?: 'Saved search') ?></strong><br>
                                         <span class="tiny muted">
-                                            <?= h($savedSearch['types'] ?: 'All types') ?> ·
-                                            <?= h($savedSearch['locations'] ?: 'All locations') ?> ·
-                                            <?= h($savedSearch['industries'] ?: 'All industries') ?> Â·
-                                            <?= h($savedSearch['statuses'] ?: 'Open jobs') ?> Â·
+                                            <?= h($savedSearch['types'] ?: 'All types') ?> &middot;
+                                            <?= h($savedSearch['locations'] ?: 'All locations') ?> &middot;
+                                            <?= h($savedSearch['industries'] ?: 'All industries') ?> &middot;
+                                            <?= h($savedSearch['statuses'] ?: 'Open jobs') ?> &middot;
                                             <?= h($savedSearch['deadline_filter'] ? str_replace('_', ' ', (string) $savedSearch['deadline_filter']) : 'Any deadline') ?>
                                         </span><br>
                                         <span class="tiny muted">Saved <?= h(date('M j, Y', strtotime((string) $savedSearch['created_at']))) ?></span>
@@ -7513,7 +7513,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                                         <button type="button" data-command="bold" title="Bold">B</button>
                                         <button type="button" data-command="italic" title="Italic">I</button>
                                         <button type="button" data-command="underline" title="Underline">U</button>
-                                        <button type="button" data-command="insertUnorderedList" title="Bullet list">•</button>
+                                        <button type="button" data-command="insertUnorderedList" title="Bullet list">List</button>
                                         <button type="button" data-command="insertOrderedList" title="Numbered list">1.</button>
                                         <button type="button" data-command="formatBlock" data-value="p" title="Paragraph">P</button>
                                     </div>
@@ -7577,7 +7577,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                                         <span class="tiny muted">Applied for <?= h($a['job_title']) ?></span>
                                         <span class="status-pill <?= h(status_class($a['status'])) ?>"><?= h($a['status']) ?></span>
                                     </div>
-                                    <form method="post" style="display:flex;gap:8px"><?= csrf_input() ?><input type="hidden" name="action" value="application_status"><input type="hidden" name="redirect_tab" value="manage"><input type="hidden" name="application_id" value="<?= h((string)$a['id']) ?>"><button name="status" value="Accepted" class="btn green">✓ Accept</button><button name="status" value="Rejected" class="btn red">✕ Reject</button></form>
+                                    <form method="post" style="display:flex;gap:8px"><?= csrf_input() ?><input type="hidden" name="action" value="application_status"><input type="hidden" name="redirect_tab" value="manage"><input type="hidden" name="application_id" value="<?= h((string)$a['id']) ?>"><button name="status" value="Accepted" class="btn green">? Accept</button><button name="status" value="Rejected" class="btn red">? Reject</button></form>
                                     </div>
                                     <?= progress_html($a['status']) ?>
                                     <?= timeline_html((int) $a['id'], $applicationEventsByApplication, $interviewsByApplication) ?>
@@ -7606,7 +7606,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                                             <button type="button" data-command="bold" title="Bold">B</button>
                                             <button type="button" data-command="italic" title="Italic">I</button>
                                             <button type="button" data-command="underline" title="Underline">U</button>
-                                            <button type="button" data-command="insertUnorderedList" title="Bullet list">•</button>
+                                            <button type="button" data-command="insertUnorderedList" title="Bullet list">List</button>
                                             <button type="button" data-command="insertOrderedList" title="Numbered list">1.</button>
                                             <button type="button" data-command="formatBlock" data-value="p" title="Paragraph">P</button>
                                         </div>
@@ -7678,7 +7678,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                                             <button type="button" data-command="bold" title="Bold">B</button>
                                             <button type="button" data-command="italic" title="Italic">I</button>
                                             <button type="button" data-command="underline" title="Underline">U</button>
-                                            <button type="button" data-command="insertUnorderedList" title="Bullet list">•</button>
+                                            <button type="button" data-command="insertUnorderedList" title="Bullet list">List</button>
                                             <button type="button" data-command="insertOrderedList" title="Numbered list">1.</button>
                                             <button type="button" data-command="formatBlock" data-value="p" title="Paragraph">P</button>
                                         </div>
@@ -7698,7 +7698,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                                     <div class="application-row">
                                         <div>
                                             <strong><?= h($a['applicant_name']) ?></strong><br>
-                                            <span class="tiny muted"><?= h($a['job_title']) ?> at <?= h($a['company']) ?><?= !empty($a['recruiter_name']) ? ' · Recruiter: ' . h($a['recruiter_name']) : '' ?></span>
+                                            <span class="tiny muted"><?= h($a['job_title']) ?> at <?= h($a['company']) ?><?= !empty($a['recruiter_name']) ? ' - Recruiter: ' . h($a['recruiter_name']) : '' ?></span>
                                             <span class="status-pill <?= h(status_class($a['status'])) ?>"><?= h($a['status']) ?></span>
                                         </div>
                                         <form method="post" style="display:flex;gap:8px;flex-wrap:wrap">
@@ -7718,7 +7718,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                         </div>
                         <div class="grid grid3 hidden">
                             <?php foreach ([['Manage Companies',$stats['companies']],['Manage Job Posts',$stats['openJobs']]] as [$x,$v]): ?>
-                            <div class="profile-box"><div style="font-size:22px">🛡️</div><strong><?= h($x) ?></strong><p class="tiny muted"><?= h($v) ?> records</p></div>
+                            <div class="profile-box"><div style="font-size:22px">???</div><strong><?= h($x) ?></strong><p class="tiny muted"><?= h($v) ?> records</p></div>
                             <?php endforeach; ?>
                         </div>
                         <?php if (is_super_admin()): ?>
@@ -7760,7 +7760,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                             <div class="applicant application-card">
                                 <div>
                                     <strong><?= h($managedUser['full_name'] ?: ($managedUser['company_name'] ?: $managedUser['email'])) ?></strong><br>
-                                    <span class="tiny muted"><?= h($managedUser['role']) ?> · <?= h($managedUser['email']) ?> · <?= h($managedUser['status']) ?></span>
+                                    <span class="tiny muted"><?= h($managedUser['role']) ?> - <?= h($managedUser['email']) ?> - <?= h($managedUser['status']) ?></span>
                                 </div>
                                 <?php if ($managedUser['role'] !== 'superadmin' && (!in_array($managedUser['role'], ['admin'], true) || is_super_admin())): ?>
                                 <form method="post">
@@ -7779,7 +7779,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                         <div class="grid hidden">
                             <?php foreach ($recruiterJobs as $job): ?>
                             <div class="applicant application-card">
-                                <div><strong><?= h($job['title']) ?></strong><br><span class="tiny muted"><?= h($job['company']) ?> · <?= h($job['location']) ?></span></div>
+                                <div><strong><?= h($job['title']) ?></strong><br><span class="tiny muted"><?= h($job['company']) ?> &middot; <?= h($job['location']) ?></span></div>
                                 <form method="post" data-confirm="Delete this job?">
                                     <?= csrf_input() ?>
                                     <input type="hidden" name="action" value="delete_job">
@@ -7813,7 +7813,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                                 <div class="applicant">
                                     <div>
                                         <strong><?= h($adminUser['full_name'] ?: $adminUser['email']) ?></strong><br>
-                                        <span class="tiny muted"><?= h($adminUser['role']) ?> · <?= h($adminUser['email']) ?> · <?= h($adminUser['status']) ?></span>
+                                        <span class="tiny muted"><?= h($adminUser['role']) ?> - <?= h($adminUser['email']) ?> - <?= h($adminUser['status']) ?></span>
                                     </div>
                                     <?php if ($adminUser['role'] === 'admin'): ?>
                                     <form method="post" data-confirm="Remove this admin account?">
@@ -8102,7 +8102,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                                     <div style="display:flex;justify-content:space-between;gap:14px;align-items:start">
                                         <div>
                                             <strong><?= h($contactMessage['subject']) ?></strong><br>
-                                            <span class="tiny muted"><?= h($contactMessage['full_name']) ?> · <?= h($contactMessage['email']) ?></span>
+                                            <span class="tiny muted"><?= h($contactMessage['full_name']) ?> - <?= h($contactMessage['email']) ?></span>
                                         </div>
                                         <span class="badge"><?= h(date('M j, Y', strtotime((string) $contactMessage['created_at']))) ?></span>
                                     </div>

@@ -1,4 +1,4 @@
-@extends('layouts.app')
+﻿@extends('layouts.app')
 
 @section('content')
     <div class="section-head">
@@ -13,7 +13,7 @@
         @foreach ($companies as $company)
             <article class="card">
                 <h3>{{ $company->name }}</h3>
-                <p class="lead" style="font-size:16px;">{{ $company->industry }} · {{ $company->location }}</p>
+                <p class="lead" style="font-size:16px;">{{ $company->industry }} &middot; {{ $company->location }}</p>
                 <p>{{ $company->description }}</p>
                 <span class="badge">{{ $company->jobs_count }} jobs</span>
             </article>

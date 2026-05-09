@@ -9,6 +9,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Str;
 use Illuminate\View\View;
@@ -23,6 +24,73 @@ class AuthController extends Controller
     public function showRegister(): View
     {
         return view('auth.register');
+    }
+
+    public function showForgotPassword(): View
+    {
+        return view('auth.forgot-password');
+    }
+
+    public function sendPasswordResetLink(Request $request): RedirectResponse
+    {
+        $data = $request->validate([
+            'email' => ['required', 'email', 'max:180'],
+        ]);
+
+        Password::sendResetLink([
+            'email' => Str::lower($data['email']),
+            'status' => 'active',
+        ]);
+
+        return back()->with('message', 'If that email belongs to an active account, a password reset link has been sent.');
+    }
+
+    public function showResetPassword(Request $request, string $token): View
+    {
+        return view('auth.reset-password', [
+            'token' => $token,
+            'email' => (string) $request->query('email', ''),
+        ]);
+    }
+
+    public function resetPassword(Request $request): RedirectResponse
+    {
+        $data = $request->validate([
+            'token' => ['required', 'string'],
+            'email' => ['required', 'email', 'max:180'],
+            'password' => [
+                'required',
+                'string',
+                'min:10',
+                'regex:/[A-Z]/',
+                'regex:/[a-z]/',
+                'regex:/[0-9]/',
+                'confirmed',
+            ],
+        ]);
+
+        $status = Password::reset(
+            [
+                'email' => Str::lower($data['email']),
+                'status' => 'active',
+                'password' => $data['password'],
+                'password_confirmation' => $request->input('password_confirmation'),
+                'token' => $data['token'],
+            ],
+            function (User $user, string $password): void {
+                $user->forceFill([
+                    'password_hash' => Hash::make($password),
+                ])->save();
+            }
+        );
+
+        if ($status !== Password::PASSWORD_RESET) {
+            return back()
+                ->withInput($request->only('email'))
+                ->with('error', 'The reset link is invalid or has expired.');
+        }
+
+        return redirect()->route('login')->with('message', 'Password reset successfully. You can login now.');
     }
 
     public function login(Request $request): RedirectResponse
