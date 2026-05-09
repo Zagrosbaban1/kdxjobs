@@ -112,34 +112,34 @@
                         <span class="tracking-badge"><?= h('Human support at every stage') ?></span>
                     </div>
                 </div>
-                <div class="tracking-visual" aria-label="Animated application tracking story">
+                <div class="tracking-visual tracking-readable" aria-label="Animated application tracking story">
                     <div class="tracking-glow"></div>
                     <div class="tracking-line"></div>
                     <div class="tracking-pulse"></div>
                     <div class="tracking-step">
                         <div class="tracking-node">01</div>
-                        <div class="tracking-card">
+                        <div class="tracking-card readable-card">
                             <strong>Applied with clarity</strong>
                             <span>Your application is received and instantly visible inside your journey.</span>
                         </div>
                     </div>
                     <div class="tracking-step">
                         <div class="tracking-node">02</div>
-                        <div class="tracking-card">
+                        <div class="tracking-card readable-card">
                             <strong>Reviewed with transparency</strong>
                             <span>You can see when your application is reviewed instead of wondering in silence.</span>
                         </div>
                     </div>
                     <div class="tracking-step">
                         <div class="tracking-node">03</div>
-                        <div class="tracking-card support">
+                        <div class="tracking-card support readable-card">
                             <strong>Guided with real support</strong>
                             <span>Interview notes, follow-ups, and service chat keep you informed in every detail.</span>
                         </div>
                     </div>
                     <div class="tracking-step" style="margin-bottom:0">
                         <div class="tracking-node">04</div>
-                        <div class="tracking-card care">
+                        <div class="tracking-card care readable-card">
                             <strong>Different because we care</strong>
                             <span>We are not just a recruiting board. We stay beside you until the next step becomes clear.</span>
                         </div>
@@ -164,9 +164,11 @@
 <section class="section">
     <div class="wrap">
         <div class="section-title"><p class="eyebrow"><?= h(tr('home.featured_jobs', 'Featured Jobs')) ?></p><h2><?= h(tr('home.featured_title', 'Fresh opportunities for talented people')) ?></h2><p><?= h(tr('home.featured_text', 'Simple job cards with clear information and fast application flow.')) ?></p></div>
-        <div class="grid grid3">
+        <div class="featured-jobs-row">
             <?php foreach (array_slice($jobs, 0, 3) as $job): ?>
-                <?php include dirname(__DIR__) . '/partials_job_card.php'; ?>
+                <div class="featured-job-slot">
+                    <?php include dirname(__DIR__) . '/partials_job_card.php'; ?>
+                </div>
             <?php endforeach; ?>
         </div>
     </div>
