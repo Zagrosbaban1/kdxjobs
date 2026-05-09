@@ -40,7 +40,7 @@
         <?php endforeach; ?>
     </div>
     <div style="display:grid;grid-template-columns:1fr auto;gap:10px;margin-top:24px">
-        <a class="btn" href="<?= h(app_url('jobs', ['job' => $job['id']])) ?>">View Details</a>
+        <a class="btn" href="<?= h(job_detail_url($job)) ?>">View Details</a>
         <?php if (($user['role'] ?? '') === 'jobseeker'): ?>
             <?php $isSaved = in_array((int) $job['id'], $savedJobIds ?? [], true); ?>
             <form method="post">

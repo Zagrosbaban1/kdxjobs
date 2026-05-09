@@ -45,6 +45,8 @@ class JobController extends Controller
 
     public function show(Job $job): View
     {
+        abort_unless($job->isOpen(), 404);
+
         $job->load(['company', 'tags']);
 
         $isSaved = Auth::check() && Auth::user()->role === 'jobseeker'
@@ -60,6 +62,7 @@ class JobController extends Controller
     public function apply(Request $request, Job $job): RedirectResponse
     {
         abort_unless(Auth::check() && Auth::user()->role === 'jobseeker', 403);
+        abort_unless($job->isOpen(), 404);
 
         $data = $request->validate([
             'applicant_name' => ['required', 'string', 'max:160'],

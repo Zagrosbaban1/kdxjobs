@@ -773,6 +773,18 @@ function post_list(string $name): array
     return array_values(array_filter(array_map(static fn($item): string => trim((string) $item), $items), static fn(string $item): bool => $item !== ''));
 }
 
+function sql_in_clause(string $column, array $values, array &$params, string $prefix): string
+{
+    $placeholders = [];
+    foreach (array_values($values) as $index => $value) {
+        $key = ':' . $prefix . $index;
+        $params[$key] = $value;
+        $placeholders[] = $key;
+    }
+
+    return $column . ' IN (' . implode(',', $placeholders) . ')';
+}
+
 function salary_bounds(?string $salary): array
 {
     preg_match_all('/\d[\d,]*/', (string) $salary, $matches);
@@ -797,6 +809,41 @@ function job_listing_status(array $job): string
     }
 
     return 'open';
+}
+
+function job_public_ref(array $job): string
+{
+    $publicId = trim((string) ($job['public_id'] ?? ''));
+    return $publicId !== '' ? $publicId : (string) ($job['id'] ?? '');
+}
+
+function new_job_public_id(): string
+{
+    return 'job_' . bin2hex(random_bytes(12));
+}
+
+function job_detail_url(array $job): string
+{
+    return app_url('jobs', ['job' => job_public_ref($job)]);
+}
+
+function can_view_job_details(array $job): bool
+{
+    if (job_listing_status($job) === 'open') {
+        return true;
+    }
+
+    $user = $_SESSION['user'] ?? null;
+    if (!is_array($user) || empty($user['id'])) {
+        return false;
+    }
+
+    $role = (string) ($user['role'] ?? '');
+    $userId = (int) $user['id'];
+
+    return $role === 'superadmin'
+        || ($role === 'admin' && (int) ($job['recruiter_id'] ?? 0) === $userId)
+        || ($role === 'company' && (int) ($job['company_user_id'] ?? 0) === $userId);
 }
 
 function job_deadline_bucket(array $job): string
@@ -918,7 +965,7 @@ function send_saved_search_alerts(PDO $pdo, array $job): void
             $userId,
             'New job match',
             'A new job matches your saved search: ' . ($job['title'] ?? 'New job') . '.',
-            app_url('jobs', ['job' => $job['id'] ?? 0])
+            job_detail_url($job)
         );
 
         $to = (string) ($savedSearch['email'] ?? '');
@@ -984,6 +1031,10 @@ $minSalary = max(0, (int) ($_GET['min_salary'] ?? 0));
 $maxSalary = max(0, (int) ($_GET['max_salary'] ?? 0));
 $requestedSort = (string) ($_GET['sort'] ?? 'newest');
 $jobSort = in_array($requestedSort, ['newest', 'oldest', 'salary_high', 'salary_low'], true) ? $requestedSort : 'newest';
+$jobsPage = max(1, (int) ($_GET['jobs_page'] ?? 1));
+$jobsPerPage = min(24, max(6, (int) ($_GET['jobs_per_page'] ?? 12)));
+$jobsTotal = 0;
+$jobsTotalPages = 1;
 $applicationSearch = trim((string) ($_GET['app_q'] ?? ''));
 $jobManageSearch = trim((string) ($_GET['job_q'] ?? ''));
 $manageEditJobId = max(0, (int) ($_GET['edit_job'] ?? 0));
@@ -1392,10 +1443,11 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             $recruiterId = is_admin_role() ? (int) $_SESSION['user']['id'] : null;
             $stmt = $pdo->prepare(
-                'INSERT INTO jobs (company_id, recruiter_id, title, location, salary, type, description, requirements, expires_at)
-                 VALUES (:company_id, :recruiter_id, :title, :location, :salary, :type, :description, :requirements, :expires_at)'
+                'INSERT INTO jobs (public_id, company_id, recruiter_id, title, location, salary, type, description, requirements, expires_at)
+                 VALUES (:public_id, :company_id, :recruiter_id, :title, :location, :salary, :type, :description, :requirements, :expires_at)'
             );
             $stmt->execute([
+                ':public_id' => new_job_public_id(),
                 ':company_id' => $companyId,
                 ':recruiter_id' => $recruiterId,
                 ':title' => field('title'),
@@ -2122,59 +2174,94 @@ $analytics = [];
 $stats = ['openJobs' => '0', 'companies' => '0', 'jobSeekers' => '0', 'applications' => '0', 'users' => '0'];
 
 if ($pdo) {
-    $jobs = $pdo->query(
-        "SELECT j.*, c.name AS company, c.industry, c.user_id AS company_user_id,
+    $currentSessionUser = $_SESSION['user'] ?? [];
+    $currentUserId = (int) ($currentSessionUser['id'] ?? 0);
+    $currentUserRole = (string) ($currentSessionUser['role'] ?? '');
+    $currentUserEmail = (string) ($currentSessionUser['email'] ?? '');
+
+    $jobSelect = "SELECT j.*, c.name AS company, c.industry, c.user_id AS company_user_id,
                 u.full_name AS recruiter_name,
-                GROUP_CONCAT(t.tag ORDER BY t.id SEPARATOR ',') AS tags
-         FROM jobs j
+                GROUP_CONCAT(t.tag ORDER BY t.id SEPARATOR ',') AS tags";
+    $jobFrom = " FROM jobs j
          JOIN companies c ON c.id = j.company_id
          LEFT JOIN users u ON u.id = j.recruiter_id
-         LEFT JOIN job_tags t ON t.job_id = j.id
-         WHERE j.status <> 'pending'
-         GROUP BY j.id
-         ORDER BY j.created_at DESC"
-    )->fetchAll();
-    $allJobs = $jobs;
+         LEFT JOIN job_tags t ON t.job_id = j.id";
+    $jobWhere = ["j.status <> 'pending'"];
+    $jobParams = [];
 
     if ($search !== '') {
-        $jobs = array_values(array_filter($jobs, static function (array $job) use ($search): bool {
-            $haystack = strtolower(implode(' ', [
-                $job['title'] ?? '',
-                $job['company'] ?? '',
-                $job['location'] ?? '',
-                $job['type'] ?? '',
-                $job['tags'] ?? '',
-                $job['description'] ?? '',
-            ]));
-            return str_contains($haystack, strtolower($search));
-        }));
+        $jobWhere[] = "(j.title LIKE :job_search OR c.name LIKE :job_search OR j.location LIKE :job_search OR j.type LIKE :job_search OR j.description LIKE :job_search OR EXISTS (SELECT 1 FROM job_tags search_tags WHERE search_tags.job_id = j.id AND search_tags.tag LIKE :job_search))";
+        $jobParams[':job_search'] = '%' . $search . '%';
+    }
+    if ($filterTypes) {
+        $jobWhere[] = sql_in_clause('j.type', $filterTypes, $jobParams, 'job_type_');
+    }
+    if ($filterLocations) {
+        $jobWhere[] = sql_in_clause('j.location', $filterLocations, $jobParams, 'job_location_');
+    }
+    if ($filterIndustries) {
+        $jobWhere[] = sql_in_clause('c.industry', $filterIndustries, $jobParams, 'job_industry_');
+    }
+    if ($filterTags) {
+        $tagClauses = [];
+        foreach ($filterTags as $index => $tag) {
+            $key = ':job_tag_' . $index;
+            $jobParams[$key] = $tag;
+            $tagClauses[] = "EXISTS (SELECT 1 FROM job_tags filter_tags_{$index} WHERE filter_tags_{$index}.job_id = j.id AND filter_tags_{$index}.tag = {$key})";
+        }
+        $jobWhere[] = '(' . implode(' AND ', $tagClauses) . ')';
+    }
+    if ($filterStatuses) {
+        $statusClauses = [];
+        if (in_array('open', $filterStatuses, true)) {
+            $statusClauses[] = "(j.status = 'active' AND (j.expires_at IS NULL OR j.expires_at >= CURDATE()))";
+        }
+        if (in_array('closed', $filterStatuses, true)) {
+            $statusClauses[] = "j.status = 'closed'";
+        }
+        if (in_array('expired', $filterStatuses, true)) {
+            $statusClauses[] = "(j.expires_at IS NOT NULL AND j.expires_at < CURDATE())";
+        }
+        if ($statusClauses) {
+            $jobWhere[] = '(' . implode(' OR ', $statusClauses) . ')';
+        }
+    } elseif ($deadlineFilter === '') {
+        $jobWhere[] = "j.status = 'active'";
+        $jobWhere[] = "(j.expires_at IS NULL OR j.expires_at >= CURDATE())";
+    }
+    if ($deadlineFilter === 'with_deadline') {
+        $jobWhere[] = 'j.expires_at IS NOT NULL';
+    } elseif ($deadlineFilter === 'no_deadline') {
+        $jobWhere[] = 'j.expires_at IS NULL';
+    } elseif ($deadlineFilter === 'closing_soon') {
+        $jobWhere[] = 'j.expires_at BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY)';
+    } elseif ($deadlineFilter === 'expired') {
+        $jobWhere[] = 'j.expires_at IS NOT NULL AND j.expires_at < CURDATE()';
     }
 
-    $jobs = array_values(array_filter($jobs, static function (array $job) use ($filterTypes, $filterLocations, $filterIndustries, $filterTags, $filterStatuses, $deadlineFilter, $minSalary, $maxSalary): bool {
-        $listingStatus = job_listing_status($job);
-        if (!$filterStatuses && $deadlineFilter === '' && $listingStatus !== 'open') {
-            return false;
-        }
-        if ($filterStatuses && !in_array($listingStatus, $filterStatuses, true)) {
-            return false;
-        }
-        if ($deadlineFilter !== '' && job_deadline_bucket($job) !== $deadlineFilter) {
-            return false;
-        }
-        if ($filterTypes && !in_array((string) ($job['type'] ?? ''), $filterTypes, true)) {
-            return false;
-        }
-        if ($filterLocations && !in_array((string) ($job['location'] ?? ''), $filterLocations, true)) {
-            return false;
-        }
-        if ($filterIndustries && !in_array((string) ($job['industry'] ?? ''), $filterIndustries, true)) {
-            return false;
-        }
-        $jobTags = tags($job);
-        if ($filterTags && !array_intersect($filterTags, $jobTags)) {
-            return false;
-        }
-        if ($minSalary > 0 || $maxSalary > 0) {
+    $jobWhereSql = ' WHERE ' . implode(' AND ', $jobWhere);
+    $jobOrderSql = $jobSort === 'oldest' ? ' ORDER BY j.created_at ASC' : ' ORDER BY j.created_at DESC';
+    $needsPhpSalaryPass = $minSalary > 0 || $maxSalary > 0 || in_array($jobSort, ['salary_high', 'salary_low'], true);
+
+    $countStmt = $pdo->prepare('SELECT COUNT(DISTINCT j.id)' . $jobFrom . $jobWhereSql);
+    $countStmt->execute($jobParams);
+    $jobsTotal = (int) $countStmt->fetchColumn();
+    $jobsTotalPages = max(1, (int) ceil($jobsTotal / $jobsPerPage));
+    $jobsPage = min($jobsPage, $jobsTotalPages);
+    $jobLimit = $needsPhpSalaryPass ? 300 : $jobsPerPage;
+    $jobOffset = $needsPhpSalaryPass ? 0 : (($jobsPage - 1) * $jobsPerPage);
+
+    $jobsStmt = $pdo->prepare($jobSelect . $jobFrom . $jobWhereSql . ' GROUP BY j.id' . $jobOrderSql . ' LIMIT :job_limit OFFSET :job_offset');
+    foreach ($jobParams as $key => $value) {
+        $jobsStmt->bindValue($key, $value);
+    }
+    $jobsStmt->bindValue(':job_limit', $jobLimit, PDO::PARAM_INT);
+    $jobsStmt->bindValue(':job_offset', $jobOffset, PDO::PARAM_INT);
+    $jobsStmt->execute();
+    $jobs = $jobsStmt->fetchAll();
+
+    if ($needsPhpSalaryPass) {
+        $jobs = array_values(array_filter($jobs, static function (array $job) use ($minSalary, $maxSalary): bool {
             [$jobMinSalary, $jobMaxSalary] = salary_bounds($job['salary'] ?? '');
             if ($minSalary > 0 && $jobMaxSalary < $minSalary) {
                 return false;
@@ -2182,31 +2269,83 @@ if ($pdo) {
             if ($maxSalary > 0 && $jobMinSalary > $maxSalary) {
                 return false;
             }
-        }
-        return true;
-    }));
+            return true;
+        }));
+        usort($jobs, static function (array $a, array $b) use ($jobSort): int {
+            [$aMin, $aMax] = salary_bounds($a['salary'] ?? '');
+            [$bMin, $bMax] = salary_bounds($b['salary'] ?? '');
+            return match ($jobSort) {
+                'oldest' => strcmp((string) ($a['created_at'] ?? ''), (string) ($b['created_at'] ?? '')),
+                'salary_high' => $bMax <=> $aMax,
+                'salary_low' => $aMin <=> $bMin,
+                default => strcmp((string) ($b['created_at'] ?? ''), (string) ($a['created_at'] ?? '')),
+            };
+        });
+        $jobsTotal = count($jobs);
+        $jobsTotalPages = max(1, (int) ceil($jobsTotal / $jobsPerPage));
+        $jobsPage = min($jobsPage, $jobsTotalPages);
+        $jobs = array_slice($jobs, ($jobsPage - 1) * $jobsPerPage, $jobsPerPage);
+    }
 
-    usort($jobs, static function (array $a, array $b) use ($jobSort): int {
-        [$aMin, $aMax] = salary_bounds($a['salary'] ?? '');
-        [$bMin, $bMax] = salary_bounds($b['salary'] ?? '');
-        return match ($jobSort) {
-            'oldest' => strcmp((string) ($a['created_at'] ?? ''), (string) ($b['created_at'] ?? '')),
-            'salary_high' => $bMax <=> $aMax,
-            'salary_low' => $aMin <=> $bMin,
-            default => strcmp((string) ($b['created_at'] ?? ''), (string) ($a['created_at'] ?? '')),
-        };
-    });
+    $allJobs = $pdo->query(
+        $jobSelect . $jobFrom . "
+         WHERE j.status <> 'pending'
+         GROUP BY j.id
+         ORDER BY j.created_at DESC
+         LIMIT 500"
+    )->fetchAll();
 
-    $companies = $pdo->query(
+    $companiesWhere = '';
+    $companiesParams = [];
+    $companiesLimit = 120;
+    if ($currentUserRole === 'company' && $currentUserId > 0) {
+        $companiesWhere = 'WHERE c.user_id = :current_company_user_id';
+        $companiesParams[':current_company_user_id'] = $currentUserId;
+        $companiesLimit = 5;
+    } elseif ($page === 'companies') {
+        $companiesLimit = 60;
+    }
+    $companiesStmt = $pdo->prepare(
         "SELECT c.*, owner.email AS owner_email, owner.status AS owner_status, COUNT(j.id) AS jobs
          FROM companies c
          LEFT JOIN users owner ON owner.id = c.user_id
          LEFT JOIN jobs j ON j.company_id = c.id AND j.status = 'active'
+         {$companiesWhere}
          GROUP BY c.id
-         ORDER BY c.name"
-    )->fetchAll();
+         ORDER BY c.name
+         LIMIT :companies_limit"
+    );
+    foreach ($companiesParams as $key => $value) {
+        $companiesStmt->bindValue($key, $value, PDO::PARAM_INT);
+    }
+    $companiesStmt->bindValue(':companies_limit', $companiesLimit, PDO::PARAM_INT);
+    $companiesStmt->execute();
+    $companies = $companiesStmt->fetchAll();
 
-    $applicants = $pdo->query(
+    $applicationWhere = [];
+    $applicationParams = [];
+    $applicationLimit = 300;
+    $selectedRequestApplicationId = max(0, (int) ($_GET['application'] ?? $_GET['application_id'] ?? 0));
+    if ($page === 'application' && $selectedRequestApplicationId > 0) {
+        $applicationWhere[] = 'a.id = :selected_request_application_id';
+        $applicationParams[':selected_request_application_id'] = $selectedRequestApplicationId;
+        $applicationLimit = 1;
+    } elseif ($currentUserRole === 'jobseeker' && $currentUserId > 0) {
+        $applicationWhere[] = '(a.user_id = :application_user_id OR LOWER(a.applicant_email) = LOWER(:application_user_email))';
+        $applicationParams[':application_user_id'] = $currentUserId;
+        $applicationParams[':application_user_email'] = $currentUserEmail;
+        $applicationLimit = 100;
+    } elseif ($currentUserRole === 'company' && $currentUserId > 0) {
+        $applicationWhere[] = 'c.user_id = :application_company_user_id';
+        $applicationParams[':application_company_user_id'] = $currentUserId;
+        $applicationLimit = 200;
+    } elseif ($currentUserRole === 'admin' && $currentUserId > 0) {
+        $applicationWhere[] = 'j.recruiter_id = :application_recruiter_id';
+        $applicationParams[':application_recruiter_id'] = $currentUserId;
+        $applicationLimit = 200;
+    }
+    $applicationWhereSql = $applicationWhere ? ' WHERE ' . implode(' AND ', $applicationWhere) : '';
+    $applicantsStmt = $pdo->prepare(
         "SELECT a.*, j.title AS job_title, j.description AS job_description, j.requirements AS job_requirements, j.company_id, j.recruiter_id,
                 c.name AS company, u.full_name AS recruiter_name, candidate.skills AS candidate_skills,
                 candidate.cv_text AS candidate_cv_text, candidate.cv_ai_skills AS candidate_cv_ai_skills,
@@ -2219,22 +2358,40 @@ if ($pdo) {
          LEFT JOIN users u ON u.id = j.recruiter_id
          LEFT JOIN users candidate ON candidate.id = a.user_id OR candidate.email = a.applicant_email
          LEFT JOIN job_tags t ON t.job_id = j.id
+         {$applicationWhereSql}
          GROUP BY a.id
-         ORDER BY a.created_at DESC"
-    )->fetchAll();
+         ORDER BY a.created_at DESC
+         LIMIT :application_limit"
+    );
+    foreach ($applicationParams as $key => $value) {
+        $applicantsStmt->bindValue($key, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
+    }
+    $applicantsStmt->bindValue(':application_limit', $applicationLimit, PDO::PARAM_INT);
+    $applicantsStmt->execute();
+    $applicants = $applicantsStmt->fetchAll();
 
-    $users = $pdo->query(
-        "SELECT id, role, full_name, company_name, email, phone, status, created_at
+    if (is_admin_role($currentUserRole)) {
+        $users = $pdo->query(
+            "SELECT id, role, full_name, company_name, email, phone, status, created_at
          FROM users
-         ORDER BY created_at DESC"
-    )->fetchAll();
+         ORDER BY created_at DESC
+         LIMIT 250"
+        )->fetchAll();
+    }
 
-    $blogPosts = $pdo->query(
+    $blogWhere = is_admin_role($currentUserRole) ? '' : "WHERE p.status = 'published'";
+    $blogLimit = is_admin_role($currentUserRole) ? 100 : 30;
+    $blogStmt = $pdo->prepare(
         "SELECT p.*, u.full_name AS author_name
          FROM blog_posts p
          LEFT JOIN users u ON u.id = p.author_id
-         ORDER BY p.is_featured DESC, p.created_at DESC"
-    )->fetchAll();
+         {$blogWhere}
+         ORDER BY p.is_featured DESC, p.created_at DESC
+         LIMIT :blog_limit"
+    );
+    $blogStmt->bindValue(':blog_limit', $blogLimit, PDO::PARAM_INT);
+    $blogStmt->execute();
+    $blogPosts = $blogStmt->fetchAll();
 
     if (isset($_SESSION['user']['id']) && ($_SESSION['user']['role'] ?? '') === 'jobseeker') {
         $savedStmt = $pdo->prepare(
@@ -2418,13 +2575,42 @@ if ($pdo) {
     ];
 }
 
-$selectedJobId = (int) ($_GET['job'] ?? ($jobs[0]['id'] ?? 0));
+$selectedJobRef = trim((string) ($_GET['job'] ?? ''));
+$selectedJobId = $selectedJobRef !== '' && ctype_digit($selectedJobRef) ? (int) $selectedJobRef : (int) ($jobs[0]['id'] ?? 0);
 $selectedJob = null;
 $selectedJobPool = isset($_GET['job']) ? $allJobs : $jobs;
 foreach ($selectedJobPool as $job) {
-    if ((int) $job['id'] === $selectedJobId) {
+    $matchesSelectedJob = $selectedJobRef !== ''
+        ? hash_equals(job_public_ref($job), $selectedJobRef) || (ctype_digit($selectedJobRef) && (int) $job['id'] === $selectedJobId)
+        : (int) $job['id'] === $selectedJobId;
+    if ($matchesSelectedJob && can_view_job_details($job)) {
         $selectedJob = $job;
         break;
+    }
+}
+if (!$selectedJob && $pdo && ($selectedJobRef !== '' || $selectedJobId > 0)) {
+    $selectedJobWhere = 'j.public_id = :selected_job_ref';
+    $selectedJobParams = [':selected_job_ref' => $selectedJobRef];
+    if ($selectedJobRef !== '' && ctype_digit($selectedJobRef)) {
+        $selectedJobWhere = '(' . $selectedJobWhere . ' OR j.id = :selected_job_id)';
+        $selectedJobParams[':selected_job_id'] = (int) $selectedJobRef;
+    }
+    $selectedJobStmt = $pdo->prepare(
+        "SELECT j.*, c.name AS company, c.industry, c.user_id AS company_user_id,
+                u.full_name AS recruiter_name,
+                GROUP_CONCAT(t.tag ORDER BY t.id SEPARATOR ',') AS tags
+         FROM jobs j
+         JOIN companies c ON c.id = j.company_id
+         LEFT JOIN users u ON u.id = j.recruiter_id
+         LEFT JOIN job_tags t ON t.job_id = j.id
+         WHERE {$selectedJobWhere} AND j.status <> 'pending'
+         GROUP BY j.id
+         LIMIT 1"
+    );
+    $selectedJobStmt->execute($selectedJobParams);
+    $selectedJob = $selectedJobStmt->fetch() ?: null;
+    if ($selectedJob && !can_view_job_details($selectedJob)) {
+        $selectedJob = null;
     }
 }
 $selectedJob ??= $jobs[0] ?? null;
@@ -3144,6 +3330,38 @@ function applications_pagination(string $page, string $tab, string $query, strin
             'applications_page' => $targetPage,
         ]);
     };
+    ?>
+    <div class="pagination-bar">
+        <a class="btn outline<?= $currentPage <= 1 ? ' is-disabled' : '' ?>" href="<?= h($currentPage <= 1 ? '#' : $buildUrl($currentPage - 1)) ?>">Previous</a>
+        <span class="pagination-meta">Page <?= h((string) $currentPage) ?> of <?= h((string) $totalPages) ?></span>
+        <a class="btn outline<?= $currentPage >= $totalPages ? ' is-disabled' : '' ?>" href="<?= h($currentPage >= $totalPages ? '#' : $buildUrl($currentPage + 1)) ?>">Next</a>
+    </div>
+    <?php
+}
+
+function jobs_pagination(int $currentPage, int $totalPages): void
+{
+    if ($totalPages <= 1) {
+        return;
+    }
+
+    $extra = [
+        'q' => $_GET['q'] ?? null,
+        'type' => query_list('type'),
+        'location' => query_list('location'),
+        'industry' => query_list('industry'),
+        'tag' => query_list('tag'),
+        'status' => query_list('status'),
+        'deadline' => $_GET['deadline'] ?? null,
+        'min_salary' => $_GET['min_salary'] ?? null,
+        'max_salary' => $_GET['max_salary'] ?? null,
+        'sort' => $_GET['sort'] ?? null,
+        'jobs_per_page' => $_GET['jobs_per_page'] ?? null,
+    ];
+    $extra = array_filter($extra, static function ($value): bool {
+        return is_array($value) ? $value !== [] : $value !== null && $value !== '';
+    });
+    $buildUrl = static fn(int $targetPage): string => app_url('jobs', array_merge($extra, ['jobs_page' => $targetPage]));
     ?>
     <div class="pagination-bar">
         <a class="btn outline<?= $currentPage <= 1 ? ' is-disabled' : '' ?>" href="<?= h($currentPage <= 1 ? '#' : $buildUrl($currentPage - 1)) ?>">Previous</a>
@@ -5919,7 +6137,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                         <td class="status-cell"><span class="status-pill <?= (($job['status'] ?? '') === 'active') ? 'applied' : 'rejected' ?>"><?= h(ucfirst((string) ($job['status'] ?? 'active'))) ?></span></td>
                         <td><?= !empty($job['expires_at']) ? h(date('M j, Y', strtotime((string) $job['expires_at']))) : '<span class="tiny muted">No deadline</span>' ?></td>
                         <td class="actions-cell">
-                            <a class="btn outline table-open-btn" href="<?= h(app_url('jobs', ['job' => $job['id']])) ?>">View</a>
+                            <a class="btn outline table-open-btn" href="<?= h(job_detail_url($job)) ?>">View</a>
                             <a class="btn outline" href="<?= h(app_url($page, array_filter([
                                 'tab' => $tab,
                                 'job_q' => $jobSearch !== '' ? $jobSearch : null,
@@ -6172,7 +6390,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                         <div class="overview-panel-head"><h3>Similar Jobs</h3><a class="tiny" href="<?= h(app_url('jobs')) ?>">Browse all</a></div>
                         <div class="similar-job-grid">
                             <?php foreach ($similarJobs as $similarJob): ?>
-                                <a class="similar-job-card" href="<?= h(app_url('jobs', ['job' => $similarJob['id']])) ?>">
+                                <a class="similar-job-card" href="<?= h(job_detail_url($similarJob)) ?>">
                                     <strong><?= h($similarJob['title'] ?? 'Job') ?></strong>
                                     <span><?= h($similarJob['company'] ?? '') ?> - <?= h($similarJob['location'] ?? '') ?></span>
                                     <em><?= h($similarJob['salary'] ?? '') ?></em>
@@ -6270,7 +6488,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
             <?php if ($search !== ''): ?><a class="btn outline" href="<?= h(app_url('jobs')) ?>"><?= h(tr('common.clear', 'Clear')) ?></a><?php endif; ?>
         </form>
         <div class="jobs-toolbar" style="margin-bottom:20px">
-            <p class="muted" style="margin:0">Showing <?= h((string) count($jobs)) ?> out of <?= h((string) count($allJobs)) ?> jobs.</p>
+            <p class="muted" style="margin:0">Showing <?= h((string) count($jobs)) ?> out of <?= h((string) $jobsTotal) ?> jobs.</p>
             <div class="sort-row">
                 <?php if (($user['role'] ?? '') === 'jobseeker'): ?>
                     <form method="post" style="margin:0">
@@ -6318,6 +6536,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                     <?php include __DIR__ . '/partials_job_card.php'; ?>
                 <?php endforeach; ?>
 	        </div>
+            <?php jobs_pagination($jobsPage, $jobsTotalPages); ?>
         <?php endif; ?>
             </main>
         </div>
@@ -6721,11 +6940,12 @@ $companyName = (string) ($company['name'] ?? '');
 $companyId = (int) ($company['id'] ?? 0);
 $companyVerificationStatus = (string) ($company['verification_status'] ?? 'verified');
 $companyCanPostJobs = !$isCompany || $companyVerificationStatus === 'verified';
-$companyJobs = $companyId > 0 ? array_values(array_filter($jobs, static fn(array $job): bool => (int) ($job['company_id'] ?? 0) === $companyId)) : [];
+$dashboardJobPool = ($isUser || $isCompany || $page === 'admin') ? $allJobs : $jobs;
+$companyJobs = $companyId > 0 ? array_values(array_filter($dashboardJobPool, static fn(array $job): bool => (int) ($job['company_id'] ?? 0) === $companyId)) : [];
 $companyApplications = $companyId > 0 ? array_values(array_filter($applicants, static fn(array $a): bool => (int) ($a['company_id'] ?? 0) === $companyId)) : [];
 $recruiterJobs = is_admin_role() && !is_super_admin()
-    ? array_values(array_filter($jobs, static fn(array $job): bool => (int) ($job['recruiter_id'] ?? 0) === (int) ($user['id'] ?? 0)))
-    : $jobs;
+    ? array_values(array_filter($dashboardJobPool, static fn(array $job): bool => (int) ($job['recruiter_id'] ?? 0) === (int) ($user['id'] ?? 0)))
+    : $dashboardJobPool;
 $recruiterApplications = is_admin_role() && !is_super_admin()
     ? array_values(array_filter($applicants, static fn(array $a): bool => (int) ($a['recruiter_id'] ?? 0) === (int) ($user['id'] ?? 0)))
     : $applicants;
@@ -6920,7 +7140,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                                             <p class="tiny muted">Add skills to your profile to unlock better matches.</p>
                                         <?php endif; ?>
                                         <?php foreach ($recommendedJobs as $job): ?>
-                                            <a class="overview-row" href="<?= h(app_url('jobs', ['job' => $job['id']])) ?>">
+                                            <a class="overview-row" href="<?= h(job_detail_url($job)) ?>">
                                                 <div>
                                                     <strong><?= h($job['title'] ?? 'Job') ?></strong>
                                                     <span><?= h($job['company'] ?? '') ?> - <?= h($job['location'] ?? '') ?></span>
@@ -6942,7 +7162,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                                             <p class="tiny muted">Save interesting roles from the Jobs page and compare them here.</p>
                                         <?php endif; ?>
                                         <?php foreach (array_slice($savedJobs, 0, 4) as $job): ?>
-                                            <a class="overview-row" href="<?= h(app_url('jobs', ['job' => $job['id']])) ?>">
+                                            <a class="overview-row" href="<?= h(job_detail_url($job)) ?>">
                                                 <strong><?= h($job['title'] ?? 'Job') ?></strong>
                                                 <span><?= h($job['company'] ?? '') ?> - saved <?= h(date('M j', strtotime((string) ($job['saved_at'] ?? 'now')))) ?></span>
                                             </a>
@@ -7226,7 +7446,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                                 <div class="applicant">
                                     <div><strong><?= h($job['title']) ?></strong><br><span class="tiny muted"><?= h($job['company']) ?> · <?= h($job['location']) ?></span></div>
                                     <div style="display:flex;gap:10px;flex-wrap:wrap">
-                                        <a class="btn outline" href="<?= h(app_url('jobs', ['job' => $job['id']])) ?>">View</a>
+                                        <a class="btn outline" href="<?= h(job_detail_url($job)) ?>">View</a>
                                         <form method="post">
                                             <?= csrf_input() ?>
                                             <input type="hidden" name="action" value="toggle_saved_job">

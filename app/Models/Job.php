@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Str as StringHelper;
 use Illuminate\Support\Str;
 
 class Job extends Model
@@ -13,6 +14,7 @@ class Job extends Model
     public $timestamps = false;
 
     protected $fillable = [
+        'public_id',
         'company_id',
         'recruiter_id',
         'title',
@@ -31,6 +33,20 @@ class Job extends Model
             'created_at' => 'datetime',
             'expires_at' => 'date',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        static::creating(function (Job $job): void {
+            if (blank($job->public_id)) {
+                $job->public_id = 'job_' . StringHelper::random(24);
+            }
+        });
+    }
+
+    public function getRouteKeyName(): string
+    {
+        return 'public_id';
     }
 
     public function company(): BelongsTo
@@ -61,6 +77,12 @@ class Job extends Model
                 $inner->whereNull('expires_at')
                     ->orWhereDate('expires_at', '>=', now()->toDateString());
             });
+    }
+
+    public function isOpen(): bool
+    {
+        return $this->status === 'active'
+            && ($this->expires_at === null || $this->expires_at->isToday() || $this->expires_at->isFuture());
     }
 
     public function summary(int $limit = 180): string

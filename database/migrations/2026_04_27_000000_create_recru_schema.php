@@ -41,6 +41,7 @@ return new class extends Migration
 
         Schema::create('jobs', function (Blueprint $table) {
             $table->id();
+            $table->string('public_id', 48)->nullable()->unique();
             $table->foreignId('company_id')->constrained('companies')->cascadeOnDelete();
             $table->foreignId('recruiter_id')->nullable()->constrained('users')->nullOnDelete();
             $table->string('title', 180);

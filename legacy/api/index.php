@@ -253,10 +253,11 @@ function create_job(): never
 
     $pdo = db();
     $stmt = $pdo->prepare(
-        'INSERT INTO jobs (company_id, title, location, salary, type, description, requirements)
-         VALUES (:company_id, :title, :location, :salary, :type, :description, :requirements)'
+        'INSERT INTO jobs (public_id, company_id, title, location, salary, type, description, requirements)
+         VALUES (:public_id, :company_id, :title, :location, :salary, :type, :description, :requirements)'
     );
     $stmt->execute([
+        ':public_id' => 'job_' . bin2hex(random_bytes(12)),
         ':company_id' => (int) $data['company_id'],
         ':title' => $data['title'],
         ':location' => $data['location'],
