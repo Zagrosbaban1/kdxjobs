@@ -1,10 +1,5 @@
 <footer class="footer">
     <div class="wrap">
-        <div class="footer-kdx-motion" aria-label="KDXJOBS">
-            <span class="footer-kdx-word" aria-hidden="true">
-                <span class="footer-kdx-letter">K</span><span class="footer-kdx-letter">D</span><span class="footer-kdx-letter">X</span><span class="footer-kdx-letter">J</span><span class="footer-kdx-letter">O</span><span class="footer-kdx-letter">B</span><span class="footer-kdx-letter">S</span>
-            </span>
-        </div>
         <div class="footer-top">
             <div class="footer-about">
                 <div class="footer-logo">

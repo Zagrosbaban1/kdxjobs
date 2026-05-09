@@ -3280,8 +3280,6 @@ function company_profile_tasks(array $user): array
 function recommended_jobs_for_user(array $jobs, array $user, array $applications, array $savedJobIds, int $limit = 4): array
 {
     $appliedJobIds = array_map(static fn(array $application): int => (int) ($application['job_id'] ?? 0), $applications);
-    $userSkills = array_map('strtolower', selected_skills($user['skills'] ?? ''));
-    $userLocation = strtolower(trim((string) ($user['location'] ?? '')));
     $ranked = [];
 
     foreach ($jobs as $job) {
@@ -3290,29 +3288,15 @@ function recommended_jobs_for_user(array $jobs, array $user, array $applications
             continue;
         }
 
-        $jobTags = array_map('strtolower', tags($job));
-        $haystack = strtolower(implode(' ', [
-            $job['title'] ?? '',
-            $job['company'] ?? '',
-            $job['industry'] ?? '',
-            $job['description'] ?? '',
-            $job['requirements'] ?? '',
-            $job['tags'] ?? '',
-        ]));
-        $score = 0;
-        foreach ($userSkills as $skill) {
-            if ($skill !== '' && (in_array($skill, $jobTags, true) || str_contains($haystack, $skill))) {
-                $score += 3;
-            }
-        }
-        if ($userLocation !== '' && str_contains(strtolower((string) ($job['location'] ?? '')), $userLocation)) {
-            $score += 2;
-        }
-        if ($score === 0 && $userSkills) {
+        $match = smart_job_match($job, $user);
+        if (!$match) {
             continue;
         }
 
-        $job['_recommendation_score'] = $score;
+        $job['_recommendation_score'] = (int) $match['score'];
+        $job['_recommendation_summary'] = (string) $match['summary'];
+        $job['_recommendation_matched_skills'] = (int) count($match['matched_skills']);
+        $job['_recommendation_location_match'] = (bool) $match['location_match'];
         $ranked[] = $job;
     }
 
@@ -3363,6 +3347,86 @@ function similar_jobs_for_job(array $jobs, array $selectedJob, int $limit = 3): 
     return array_slice($ranked, 0, $limit);
 }
 
+function smart_job_salary_numbers(string $salary): array
+{
+    preg_match_all('/\d+(?:,\d{3})*(?:\.\d+)?/', $salary, $matches);
+
+    return array_values(array_filter(array_map(static function (string $value): float {
+        return (float) str_replace(',', '', $value);
+    }, $matches[0] ?? []), static fn (float $value): bool => $value > 0));
+}
+
+function smart_job_match(array $job, ?array $user): ?array
+{
+    if (!$user || (($user['role'] ?? '') !== 'jobseeker')) {
+        return null;
+    }
+
+    $userSkills = selected_skills($user['skills'] ?? '');
+    $userLocation = trim((string) ($user['location'] ?? ''));
+    $preferredType = trim((string) ($user['preferred_job_type'] ?? $user['job_type'] ?? $user['desired_job_type'] ?? $user['employment_type'] ?? ''));
+    $expectedSalaryText = trim((string) ($user['expected_salary'] ?? $user['desired_salary'] ?? $user['salary_expectation'] ?? $user['salary'] ?? ''));
+
+    if (!$userSkills && $userLocation === '' && $preferredType === '' && $expectedSalaryText === '') {
+        return null;
+    }
+
+    $jobTags = tags($job);
+    $normalizedUserSkills = array_map('strtolower', $userSkills);
+    $matchedSkills = [];
+    $missingSkills = [];
+
+    foreach ($jobTags as $tag) {
+        if (in_array(strtolower($tag), $normalizedUserSkills, true)) {
+            $matchedSkills[] = $tag;
+        } else {
+            $missingSkills[] = $tag;
+        }
+    }
+
+    $score = 0;
+    $skillTotal = max(1, count($jobTags));
+    $score += (int) round((count($matchedSkills) / $skillTotal) * 45);
+
+    $jobLocation = strtolower((string) ($job['location'] ?? ''));
+    $remoteJob = str_contains($jobLocation, 'remote');
+    $locationMatch = $remoteJob || ($userLocation !== '' && str_contains($jobLocation, strtolower($userLocation)));
+    $score += $locationMatch ? 20 : ($userLocation === '' ? 8 : 0);
+
+    $jobType = strtolower((string) ($job['type'] ?? ''));
+    $typeMatch = $preferredType !== '' && $jobType !== '' && str_contains($jobType, strtolower($preferredType));
+    $score += $preferredType === '' ? 10 : ($typeMatch ? 15 : 0);
+
+    $salaryNumbers = smart_job_salary_numbers((string) ($job['salary'] ?? ''));
+    $expectedNumbers = smart_job_salary_numbers($expectedSalaryText);
+    $salaryMatch = false;
+    if ($expectedNumbers && $salaryNumbers) {
+        $expectedSalary = max($expectedNumbers);
+        $jobSalaryMax = max($salaryNumbers);
+        $salaryMatch = $jobSalaryMax >= ($expectedSalary * .85);
+        $score += $salaryMatch ? 20 : 4;
+    } else {
+        $score += 10;
+    }
+
+    $score = max(0, min(100, $score));
+    $level = $score >= 75 ? 'high' : ($score >= 50 ? 'medium' : 'low');
+    $summary = $level === 'high' ? 'Strong match' : ($level === 'medium' ? 'Good potential' : 'Needs profile fit');
+
+    return [
+        'score' => $score,
+        'level' => $level,
+        'summary' => $summary,
+        'matched_skills' => array_slice($matchedSkills, 0, 6),
+        'missing_skills' => array_slice($missingSkills, 0, 4),
+        'location_match' => $locationMatch,
+        'type_match' => $typeMatch,
+        'salary_match' => $salaryMatch,
+        'has_salary_signal' => (bool) ($expectedNumbers && $salaryNumbers),
+        'skill_total' => count($jobTags),
+    ];
+}
+
 function job_match_insights(array $job, array $user): array
 {
     $userSkills = selected_skills($user['skills'] ?? '');
@@ -3386,6 +3450,7 @@ function job_match_insights(array $job, array $user): array
             && str_contains(strtolower((string) ($job['location'] ?? '')), strtolower((string) $user['location'])),
         'has_cv' => trim((string) ($user['cv_file'] ?? '')) !== '',
         'profile_score' => profile_score($user),
+        'match_score' => smart_job_match($job, $user)['score'] ?? profile_score($user),
     ];
 }
 
@@ -6018,8 +6083,8 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                 <?php endif; ?>
                 <?php if ($jobMatchInsights): ?>
                     <div class="job-match-card">
-                        <div class="overview-panel-head"><h3>Fit Check</h3><strong><?= h((string) $jobMatchInsights['profile_score']) ?>%</strong></div>
-                        <div class="score-bar"><span style="width:<?= h((string) $jobMatchInsights['profile_score']) ?>%"></span></div>
+                        <div class="overview-panel-head"><h3>Fit Check</h3><strong><?= h((string) $jobMatchInsights['match_score']) ?>%</strong></div>
+                        <div class="score-bar"><span style="width:<?= h((string) $jobMatchInsights['match_score']) ?>%"></span></div>
                         <div class="job-match-list">
                             <span class="<?= $jobMatchInsights['has_cv'] ? 'ok' : '' ?>"><?= $jobMatchInsights['has_cv'] ? 'CV ready' : 'Upload CV before applying' ?></span>
                             <span class="<?= $jobMatchInsights['location_match'] ? 'ok' : '' ?>"><?= $jobMatchInsights['location_match'] ? 'Location match' : 'Check location fit' ?></span>
@@ -6203,7 +6268,7 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                         </label>
                     </div>
                 </details>
-                <details class="filter-block" open>
+                <details class="filter-block">
                     <summary>Job Types</summary>
                     <div class="filter-body check-list">
                         <label class="check-item"><input type="checkbox" value="" <?= empty($filterTypes) ? 'checked' : '' ?>><span>All job types [<?= h((string) count($allJobs)) ?>]</span></label>
@@ -6895,8 +6960,12 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                                         <?php endif; ?>
                                         <?php foreach ($recommendedJobs as $job): ?>
                                             <a class="overview-row" href="<?= h(app_url('jobs', ['job' => $job['id']])) ?>">
-                                                <strong><?= h($job['title'] ?? 'Job') ?></strong>
-                                                <span><?= h($job['company'] ?? '') ?> - <?= h($job['location'] ?? '') ?></span>
+                                                <div>
+                                                    <strong><?= h($job['title'] ?? 'Job') ?></strong>
+                                                    <span><?= h($job['company'] ?? '') ?> - <?= h($job['location'] ?? '') ?></span>
+                                                    <small><?= h($job['_recommendation_summary'] ?? 'Recommended') ?> · <?= h((string) ($job['_recommendation_matched_skills'] ?? 0)) ?> skills matched</small>
+                                                </div>
+                                                <b><?= h((string) ($job['_recommendation_score'] ?? 0)) ?>%</b>
                                             </a>
                                         <?php endforeach; ?>
                                     </div>
@@ -7944,4 +8013,3 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
 <?php include __DIR__ . '/includes/layout_footer.php'; ?>
 </body>
 </html>
-

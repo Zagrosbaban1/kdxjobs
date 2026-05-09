@@ -1,3 +1,4 @@
+<?php $jobMatchPreview = smart_job_match($job, $user ?? null); ?>
 <div class="card job-card card-pad">
     <div class="job-top">
         <span class="icon">💼</span>
@@ -13,6 +14,26 @@
         <div>💰 <?= h($job['salary']) ?></div>
         <div><?= !empty($job['expires_at']) ? 'Deadline ' . h(date('M j, Y', strtotime((string) $job['expires_at']))) : 'No deadline' ?></div>
     </div>
+    <?php if ($jobMatchPreview): ?>
+        <div class="smart-match-card <?= h($jobMatchPreview['level']) ?>">
+            <div class="smart-match-score">
+                <strong><?= h((string) $jobMatchPreview['score']) ?>%</strong>
+                <span>match</span>
+            </div>
+            <div class="smart-match-copy">
+                <strong><?= h($jobMatchPreview['summary']) ?></strong>
+                <span>
+                    <?= h((string) count($jobMatchPreview['matched_skills'])) ?>/<?= h((string) max(1, (int) $jobMatchPreview['skill_total'])) ?> skills
+                    &middot; <?= $jobMatchPreview['location_match'] ? 'Location fits' : 'Check location' ?>
+                </span>
+            </div>
+        </div>
+    <?php elseif (($user['role'] ?? '') === 'jobseeker'): ?>
+        <div class="smart-match-card empty">
+            <div class="smart-match-score"><strong>--</strong><span>match</span></div>
+            <div class="smart-match-copy"><strong>Add profile skills</strong><span>Unlock smart job matching</span></div>
+        </div>
+    <?php endif; ?>
     <div class="tags">
         <?php foreach (tags($job) as $tag): ?>
             <span class="tag"><?= h($tag) ?></span>

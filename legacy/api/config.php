@@ -43,6 +43,7 @@ function legacy_env_value(string $key): ?string
 }
 
 defined('DB_HOST') || define('DB_HOST', (string) ($localConfig['db_host'] ?? getenv('RECRU_DB_HOST') ?: legacy_env_value('DB_HOST') ?: '127.0.0.1'));
+defined('DB_PORT') || define('DB_PORT', (string) ($localConfig['db_port'] ?? getenv('RECRU_DB_PORT') ?: legacy_env_value('DB_PORT') ?: '3306'));
 defined('DB_NAME') || define('DB_NAME', (string) ($localConfig['db_name'] ?? getenv('RECRU_DB_NAME') ?: legacy_env_value('DB_DATABASE') ?: 'recru_laravel'));
 defined('DB_USER') || define('DB_USER', (string) ($localConfig['db_user'] ?? getenv('RECRU_DB_USER') ?: legacy_env_value('DB_USERNAME') ?: 'root'));
 defined('DB_PASS') || define('DB_PASS', (string) ($localConfig['db_pass'] ?? getenv('RECRU_DB_PASS') ?: legacy_env_value('DB_PASSWORD') ?: ''));
@@ -114,10 +115,11 @@ function db(): PDO
         return $pdo;
     }
 
-    $dsn = 'mysql:host=' . DB_HOST . ';dbname=' . DB_NAME . ';charset=utf8mb4';
+    $dsn = 'mysql:host=' . DB_HOST . ';port=' . DB_PORT . ';dbname=' . DB_NAME . ';charset=utf8mb4';
     $pdo = new PDO($dsn, DB_USER, DB_PASS, [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        PDO::ATTR_TIMEOUT => 3,
     ]);
 
     return $pdo;

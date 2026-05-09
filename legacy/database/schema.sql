@@ -156,6 +156,37 @@ CREATE TABLE IF NOT EXISTS service_messages (
   FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS quizzes (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  creator_id BIGINT UNSIGNED NULL,
+  company_id BIGINT UNSIGNED NULL,
+  job_id BIGINT UNSIGNED NULL,
+  title VARCHAR(180) NOT NULL,
+  description TEXT NULL,
+  status ENUM('draft', 'published') NOT NULL DEFAULT 'draft',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (creator_id) REFERENCES users(id) ON DELETE SET NULL,
+  FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE SET NULL,
+  FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS quiz_questions (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  quiz_id INT NOT NULL,
+  question_text TEXT NOT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  FOREIGN KEY (quiz_id) REFERENCES quizzes(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS quiz_choices (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  question_id INT NOT NULL,
+  choice_text VARCHAR(255) NOT NULL,
+  is_correct TINYINT(1) NOT NULL DEFAULT 0,
+  sort_order INT NOT NULL DEFAULT 0,
+  FOREIGN KEY (question_id) REFERENCES quiz_questions(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS blog_posts (
   id INT AUTO_INCREMENT PRIMARY KEY,
   author_id INT NULL,

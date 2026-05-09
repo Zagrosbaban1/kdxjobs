@@ -30,7 +30,7 @@ class DatabaseSeeder extends Seeder
             'company_name' => 'BlueTech Solutions',
             'phone' => '+964 750 111 1111',
             'password_hash' => '$2y$10$9jJwENmg2M.HMoeTCe5LGuS8CFTFvG4ZIrn/t7KfPabjN6eT9FESy',
-            'industry' => 'Data & AI',
+            'industry' => 'Data & Analytics',
             'location' => 'Erbil, Iraq',
             'status' => 'active',
         ]);
@@ -57,9 +57,9 @@ class DatabaseSeeder extends Seeder
             'name' => 'BlueTech Solutions',
         ], [
             'user_id' => $companyUser->id,
-            'industry' => 'Data & AI',
+            'industry' => 'Data & Analytics',
             'location' => 'Erbil, Iraq',
-            'description' => 'Business intelligence, data platforms, and AI services.',
+            'description' => 'Business intelligence, analytics platforms, and digital transformation services.',
         ]);
 
         $cloudNova = Company::query()->firstOrCreate([

@@ -121,6 +121,32 @@ return new class extends Migration
             $table->timestamp('created_at')->useCurrent();
         });
 
+        Schema::create('quizzes', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('creator_id')->nullable()->constrained('users')->nullOnDelete();
+            $table->foreignId('company_id')->nullable()->constrained('companies')->nullOnDelete();
+            $table->foreignId('job_id')->nullable()->constrained('jobs')->nullOnDelete();
+            $table->string('title', 180);
+            $table->text('description')->nullable();
+            $table->enum('status', ['draft', 'published'])->default('draft');
+            $table->timestamp('created_at')->useCurrent();
+        });
+
+        Schema::create('quiz_questions', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('quiz_id')->constrained('quizzes')->cascadeOnDelete();
+            $table->text('question_text');
+            $table->integer('sort_order')->default(0);
+        });
+
+        Schema::create('quiz_choices', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('question_id')->constrained('quiz_questions')->cascadeOnDelete();
+            $table->string('choice_text', 255);
+            $table->boolean('is_correct')->default(false);
+            $table->integer('sort_order')->default(0);
+        });
+
         Schema::create('blog_posts', function (Blueprint $table) {
             $table->id();
             $table->foreignId('author_id')->nullable()->constrained('users')->nullOnDelete();
@@ -138,6 +164,9 @@ return new class extends Migration
     public function down(): void
     {
         Schema::dropIfExists('blog_posts');
+        Schema::dropIfExists('quiz_choices');
+        Schema::dropIfExists('quiz_questions');
+        Schema::dropIfExists('quizzes');
         Schema::dropIfExists('service_messages');
         Schema::dropIfExists('interviews');
         Schema::dropIfExists('application_events');

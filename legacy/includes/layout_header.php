@@ -4,8 +4,8 @@
             <span class="brand-icon"><img src="<?= h(asset_url('assets/kdx-logo.svg')) ?>" alt=""></span>
             <span><span class="brand-title">KDXJobs</span></span>
         </a>
-        <button class="btn outline nav-menu-toggle" type="button" data-nav-toggle aria-label="<?= h(tr('nav.menu', 'Open navigation menu')) ?>" aria-expanded="false">&#9776;</button>
-        <nav class="nav-links">
+        <button class="btn outline nav-menu-toggle" type="button" data-nav-toggle aria-label="<?= h(tr('nav.menu', 'Open navigation menu')) ?>" aria-controls="primary-navigation" aria-expanded="false">&#9776;</button>
+        <nav class="nav-links" id="primary-navigation">
             <?php
             $navItems = [['home', tr('nav.home', 'Home')], ['jobs', tr('nav.jobs', 'Jobs')], ['companies', tr('nav.companies', 'Companies')], ['learn', tr('nav.learn', 'Learn')], ['blog', tr('nav.blog', 'Blog')]];
             if (is_admin_role($user['role'] ?? '')) {
