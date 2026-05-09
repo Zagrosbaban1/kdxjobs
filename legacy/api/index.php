@@ -127,7 +127,7 @@ function register_user(): never
     if ($role === 'jobseeker' && (!isset($_FILES['cv_file']) || (int) ($_FILES['cv_file']['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE)) {
         throw new RuntimeException('Please upload your CV as a PDF file.');
     }
-    $cvFile = upload_file('cv_file', ['pdf'], MAX_CV_UPLOAD_BYTES);
+    $cvFile = upload_file('cv_file', ['pdf'], MAX_CV_UPLOAD_BYTES, 'upload_', 'private');
     $logoFile = upload_file('logo_file', ['png', 'jpg', 'jpeg', 'webp']);
     $pdo = db();
 
@@ -202,7 +202,7 @@ function apply_for_job(): never
     $data = input();
     require_fields($data, ['job_id', 'applicant_name', 'applicant_email', 'role']);
     $applicantEmail = require_valid_email_address((string) $data['applicant_email'], 'Please enter a valid applicant email.');
-    $cvFile = upload_file('application_cv', ['pdf'], MAX_CV_UPLOAD_BYTES);
+    $cvFile = upload_file('application_cv', ['pdf'], MAX_CV_UPLOAD_BYTES, 'upload_', 'private');
 
     $stmt = db()->prepare(
         'INSERT INTO applications (job_id, user_id, applicant_name, applicant_email, applicant_phone, role, cover_note, cv_file)

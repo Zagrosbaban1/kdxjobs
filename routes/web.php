@@ -3,8 +3,7 @@
 use App\Http\Controllers\LegacyController;
 use Illuminate\Support\Facades\Route;
 
-Route::match(['get', 'post', 'options'], '/api/{path?}', [LegacyController::class, 'api'])
-    ->where('path', '.*')
+Route::match(['get', 'post', 'options'], '/api', [LegacyController::class, 'api'])
     ->withoutMiddleware([
         \Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class,
     ]);

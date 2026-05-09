@@ -16,17 +16,11 @@ class LegacyController extends Controller
         return $this->runLegacyScript($request, $legacyEntry, '/index.php');
     }
 
-    public function api(Request $request, string $path = 'index.php'): Response
+    public function api(Request $request): Response
     {
-        $safePath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, ltrim($path, '/\\'));
-        $legacyRoot = realpath(base_path('legacy/api'));
-        $legacyEntry = realpath(base_path('legacy/api') . DIRECTORY_SEPARATOR . $safePath);
+        $legacyEntry = base_path('legacy/api/index.php');
 
-        if (!$legacyRoot || !$legacyEntry || !str_starts_with($legacyEntry, $legacyRoot . DIRECTORY_SEPARATOR)) {
-            abort(404);
-        }
-
-        return $this->runLegacyScript($request, $legacyEntry, '/api/' . str_replace(DIRECTORY_SEPARATOR, '/', $safePath));
+        return $this->runLegacyScript($request, $legacyEntry, '/api/index.php');
     }
 
     public function asset(string $path): Response
@@ -91,6 +85,7 @@ class LegacyController extends Controller
 
         defined('APP_BASE_PATH_OVERRIDE') || define('APP_BASE_PATH_OVERRIDE', $basePath);
         defined('UPLOAD_PUBLIC_ROOT') || define('UPLOAD_PUBLIC_ROOT', public_path('uploads'));
+        defined('UPLOAD_PRIVATE_ROOT') || define('UPLOAD_PRIVATE_ROOT', storage_path('app/private/uploads'));
         defined('LEGACY_STORAGE_ROOT') || define('LEGACY_STORAGE_ROOT', storage_path('legacy'));
 
         if (session_status() !== PHP_SESSION_ACTIVE) {

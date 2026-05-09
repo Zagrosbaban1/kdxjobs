@@ -233,7 +233,20 @@ function ensure_upload_directory_security(string $uploadDir): void
     }
 }
 
-function upload_file(string $field, array $allowedExtensions, ?int $maxBytes = null, string $filenamePrefix = 'upload_'): ?string
+function upload_storage_root(string $storage): string
+{
+    if ($storage === 'private') {
+        return defined('UPLOAD_PRIVATE_ROOT')
+            ? (string) UPLOAD_PRIVATE_ROOT
+            : dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'app' . DIRECTORY_SEPARATOR . 'private' . DIRECTORY_SEPARATOR . 'uploads';
+    }
+
+    return defined('UPLOAD_PUBLIC_ROOT')
+        ? (string) UPLOAD_PUBLIC_ROOT
+        : dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads';
+}
+
+function upload_file(string $field, array $allowedExtensions, ?int $maxBytes = null, string $filenamePrefix = 'upload_', string $storage = 'public'): ?string
 {
     if (!isset($_FILES[$field])) {
         return null;
@@ -285,7 +298,7 @@ function upload_file(string $field, array $allowedExtensions, ?int $maxBytes = n
         throw new RuntimeException('Uploaded file content does not match the file type.');
     }
 
-    $uploadDir = defined('UPLOAD_PUBLIC_ROOT') ? (string) UPLOAD_PUBLIC_ROOT : dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads';
+    $uploadDir = upload_storage_root($storage);
     ensure_upload_directory_security($uploadDir);
 
     $safePrefix = preg_replace('/[^a-z0-9_-]/i', '', $filenamePrefix) ?: 'upload_';

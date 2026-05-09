@@ -89,6 +89,53 @@ function csrf_input(): string
     return '<input type="hidden" name="csrf_token" value="' . h(csrf_token_value()) . '">';
 }
 
+function regenerate_csrf_token(): void
+{
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
+function expire_session_cookie(): void
+{
+    if (!ini_get('session.use_cookies')) {
+        return;
+    }
+
+    $params = session_get_cookie_params();
+    setcookie(session_name(), '', [
+        'expires' => time() - 42000,
+        'path' => $params['path'] ?: '/',
+        'domain' => $params['domain'] ?? '',
+        'secure' => (bool) ($params['secure'] ?? false),
+        'httponly' => (bool) ($params['httponly'] ?? true),
+        'samesite' => $params['samesite'] ?? 'Lax',
+    ]);
+}
+
+function destroy_current_session(): void
+{
+    $_SESSION = [];
+    expire_session_cookie();
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_destroy();
+    }
+}
+
+function enforce_session_activity_timeout(int $ttlSeconds = 2700): bool
+{
+    if (empty($_SESSION['user']['id'])) {
+        return false;
+    }
+
+    $lastActivity = (int) ($_SESSION['last_activity_at'] ?? 0);
+    if ($lastActivity > 0 && (time() - $lastActivity) > $ttlSeconds) {
+        destroy_current_session();
+        return true;
+    }
+
+    $_SESSION['last_activity_at'] = time();
+    return false;
+}
+
 function app_setting(string $key, string $default = ''): string
 {
     global $pdo;
@@ -1051,17 +1098,16 @@ try {
             FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE SET NULL
         )"
     );
+    if (enforce_session_activity_timeout()) {
+        go('login', 'Session expired. Please login again.');
+    }
+
     if (isset($_SESSION['user']['id'])) {
         $sessionUser = $pdo->prepare('SELECT * FROM users WHERE id = :id AND status = "active" LIMIT 1');
         $sessionUser->execute([':id' => (int) $_SESSION['user']['id']]);
         $freshUser = $sessionUser->fetch();
         if (!$freshUser) {
-            $_SESSION = [];
-            if (ini_get('session.use_cookies')) {
-                $params = session_get_cookie_params();
-                setcookie(session_name(), '', time() - 42000, $params['path'], $params['domain'], (bool) $params['secure'], (bool) $params['httponly']);
-            }
-            session_destroy();
+            destroy_current_session();
         } else {
             unset($freshUser['password_hash']);
             $_SESSION['user'] = $freshUser;
@@ -1138,17 +1184,14 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             unset($user['password_hash']);
             session_regenerate_id(true);
+            regenerate_csrf_token();
             $_SESSION['user'] = $user;
+            $_SESSION['last_activity_at'] = time();
             go(is_admin_role($user['role']) ? 'admin' : ($user['role'] === 'company' ? 'company' : 'user'), 'Login successful.', ['tab' => is_admin_role($user['role']) ? 'manage' : 'profile']);
         }
 
         if ($action === 'logout') {
-            $_SESSION = [];
-            if (ini_get('session.use_cookies')) {
-                $params = session_get_cookie_params();
-                setcookie(session_name(), '', time() - 42000, $params['path'], $params['domain'], (bool) $params['secure'], (bool) $params['httponly']);
-            }
-            session_destroy();
+            destroy_current_session();
             go('home', 'Logged out.');
         }
 
@@ -1169,7 +1212,7 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (!isset($_FILES['cv_file']) || (int) ($_FILES['cv_file']['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
                     throw new RuntimeException('Please upload your CV as a PDF file.');
                 }
-                $cvFile = upload_file('cv_file', ['pdf'], MAX_CV_UPLOAD_BYTES);
+                $cvFile = upload_file('cv_file', ['pdf'], MAX_CV_UPLOAD_BYTES, 'upload_', 'private');
             }
             $cvScreen = $role === 'jobseeker' ? screen_cv($cvFile, implode(', ', $selectedSkills)) : ['text' => null, 'skills' => null, 'summary' => null, 'json' => null];
 
@@ -1245,7 +1288,7 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
             $applicationCv = null;
 
             if ($cvChoice === 'new') {
-                $applicationCv = upload_file('application_cv', ['pdf'], MAX_CV_UPLOAD_BYTES);
+                $applicationCv = upload_file('application_cv', ['pdf'], MAX_CV_UPLOAD_BYTES, 'upload_', 'private');
                 if (!$applicationCv) {
                     throw new RuntimeException('Please upload a new CV file.');
                 }
@@ -2084,7 +2127,7 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
             $skillsValue = is_array($selectedSkills)
                 ? implode(', ', array_values(array_filter(array_map('trim', $selectedSkills))))
                 : field('skills');
-            $cvFile = $currentRole === 'jobseeker' ? upload_file('cv_file', ['pdf'], MAX_CV_UPLOAD_BYTES) : null;
+            $cvFile = $currentRole === 'jobseeker' ? upload_file('cv_file', ['pdf'], MAX_CV_UPLOAD_BYTES, 'upload_', 'private') : null;
             $profilePhoto = upload_file('profile_photo', ['png', 'jpg', 'jpeg', 'webp'], 2 * 1024 * 1024);
             $cvScreen = $cvFile ? screen_cv($cvFile, $skillsValue) : null;
             $stmt = $pdo->prepare(
@@ -3787,17 +3830,25 @@ function upload_absolute_path(?string $relativePath): ?string
         return null;
     }
 
-    $uploadRoot = defined('UPLOAD_PUBLIC_ROOT')
-        ? (string) UPLOAD_PUBLIC_ROOT
-        : dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads';
-    $baseUploadDir = realpath($uploadRoot);
-    $filePath = realpath($uploadRoot . DIRECTORY_SEPARATOR . basename($relativePath));
+    $uploadRoots = [
+        defined('UPLOAD_PRIVATE_ROOT')
+            ? (string) UPLOAD_PRIVATE_ROOT
+            : dirname(__DIR__) . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'app' . DIRECTORY_SEPARATOR . 'private' . DIRECTORY_SEPARATOR . 'uploads',
+        defined('UPLOAD_PUBLIC_ROOT')
+            ? (string) UPLOAD_PUBLIC_ROOT
+            : dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads',
+    ];
 
-    if (!$baseUploadDir || !$filePath || !str_starts_with($filePath, $baseUploadDir . DIRECTORY_SEPARATOR) || !is_file($filePath)) {
-        return null;
+    foreach ($uploadRoots as $uploadRoot) {
+        $baseUploadDir = realpath($uploadRoot);
+        $filePath = realpath($uploadRoot . DIRECTORY_SEPARATOR . basename($relativePath));
+
+        if ($baseUploadDir && $filePath && str_starts_with($filePath, $baseUploadDir . DIRECTORY_SEPARATOR) && is_file($filePath)) {
+            return $filePath;
+        }
     }
 
-    return $filePath;
+    return null;
 }
 
 function command_available(string $command): bool
