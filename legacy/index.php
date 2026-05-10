@@ -2877,7 +2877,7 @@ function evaluate_job_template_criteria(array $template, string $candidateText, 
         $keywords = normalize_text_list($criterion['keywords'] ?? []);
         $matched = [];
         foreach ($keywords as $keyword) {
-            if ($haystack !== '' && str_contains($haystack, strtolower($keyword))) {
+            if ($haystack !== '' && candidate_matches_requirement($keyword, $haystack, $keywords)) {
                 $matched[] = $keyword;
             }
         }
@@ -3671,22 +3671,73 @@ function text_contains_requirement_signal(string $haystack, string $needle): boo
     return str_contains($haystack, $needle);
 }
 
-function requirement_aliases(string $signal): array
+function requirement_semantic_groups(): array
 {
-    $key = strtolower(trim($signal));
-    $aliases = [
-        'hr' => ['hr', 'human resources', 'recruitment', 'recruiter', 'talent acquisition', 'staffing', 'employee relations', 'personnel'],
-        'human resources' => ['hr', 'human resources', 'recruitment', 'recruiter', 'talent acquisition', 'staffing', 'employee relations', 'personnel'],
-        'recruitment' => ['recruitment', 'recruiter', 'talent acquisition', 'screening', 'interviewing', 'candidate sourcing'],
-        'screening' => ['screening', 'shortlist', 'shortlisting', 'candidate review', 'interviewing'],
-        'management' => ['management', 'manager', 'managed', 'leadership', 'supervision', 'team lead', 'project management', 'digital transformation management'],
-        'project management' => ['project management', 'management', 'managed project', 'coordination', 'planning'],
-        'communication' => ['communication', 'communicate', 'coordination', 'presentation', 'stakeholder communication'],
-        'excel' => ['excel', 'spreadsheet', 'pivot', 'vlookup', 'xlookup'],
-        'aws' => ['aws', 'amazon web services', 'cloud'],
+    return [
+        'hr' => ['hr', 'human resources', 'recruitment', 'recruiter', 'talent acquisition', 'staffing', 'employee relations', 'personnel', 'onboarding', 'screening', 'interviewing', 'shortlist', 'candidate'],
+        'management' => ['management', 'manager', 'managed', 'leadership', 'supervision', 'team lead', 'team leader', 'coordination', 'planning', 'strategy', 'oversight', 'project management', 'digital transformation management'],
+        'operations' => ['operations', 'operational', 'process', 'workflow', 'procedure', 'coordination', 'logistics', 'planning', 'execution', 'administration'],
+        'administration' => ['administration', 'administrative', 'office', 'document', 'documentation', 'records', 'filing', 'scheduling', 'coordination', 'assistant', 'clerical'],
+        'finance' => ['finance', 'financial', 'accounting', 'accountant', 'bookkeeping', 'ledger', 'invoice', 'payment', 'payroll', 'reconciliation', 'budget', 'forecast', 'tax', 'vat'],
+        'data' => ['data', 'analytics', 'analysis', 'reporting', 'dashboard', 'dashboarding', 'kpi', 'metrics', 'insight', 'sql', 'excel', 'power bi', 'tableau', 'visualization'],
+        'software' => ['software', 'developer', 'development', 'programming', 'code', 'coding', 'application', 'system', 'web', 'api', 'database', 'github', 'git', 'frontend', 'backend'],
+        'it' => ['it', 'information technology', 'technical support', 'help desk', 'helpdesk', 'troubleshooting', 'hardware', 'software support', 'network', 'systems', 'windows', 'ticket'],
+        'cloud' => ['cloud', 'aws', 'amazon web services', 'azure', 'devops', 'deployment', 'hosting', 'infrastructure'],
+        'sales' => ['sales', 'business development', 'account management', 'client', 'customer', 'pipeline', 'lead generation', 'negotiation', 'crm'],
+        'customer_service' => ['customer service', 'customer support', 'client service', 'service desk', 'complaint', 'support', 'call center', 'relationship', 'customer care'],
+        'marketing' => ['marketing', 'digital marketing', 'campaign', 'social media', 'seo', 'content', 'brand', 'advertising', 'analytics'],
+        'security' => ['security', 'safety', 'risk', 'incident', 'surveillance', 'access control', 'cctv', 'patrol', 'threat', 'investigation', 'hse'],
+        'engineering' => ['engineering', 'engineer', 'civil', 'site', 'construction', 'autocad', 'design', 'project', 'survey', 'quantity', 'quality control'],
+        'warehouse' => ['warehouse', 'inventory', 'stock', 'logistics', 'supply chain', 'dispatch', 'receiving', 'shipping', 'storekeeper', 'procurement'],
+        'communication' => ['communication', 'communicate', 'presentation', 'stakeholder', 'coordination', 'reporting', 'writing', 'collaboration'],
+        'excel' => ['excel', 'spreadsheet', 'pivot', 'pivot table', 'vlookup', 'xlookup', 'worksheet'],
+        'bi' => ['power bi', 'tableau', 'dashboard', 'visualization', 'reporting', 'business intelligence'],
     ];
+}
 
-    return array_values(array_unique(array_merge([$signal], $aliases[$key] ?? [])));
+function requirement_tokens(string $signal): array
+{
+    $words = preg_split('/[^a-z0-9+#.]+/i', strtolower($signal), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+    $stop = array_flip(['and', 'or', 'with', 'the', 'for', 'role', 'skill', 'skills', 'experience', 'work', 'job', 'requirement', 'requirements']);
+    return array_values(array_filter($words, static fn(string $word): bool => strlen($word) >= 3 && !isset($stop[$word])));
+}
+
+function requirement_aliases(string $signal, array $contextSignals = []): array
+{
+    $signal = trim($signal);
+    $key = strtolower($signal);
+    $aliases = [$signal];
+    $groups = requirement_semantic_groups();
+
+    foreach ($groups as $groupName => $terms) {
+        $groupText = $groupName . ' ' . implode(' ', $terms);
+        if (text_contains_requirement_signal($groupText, $key)) {
+            $aliases = array_merge($aliases, $terms);
+            continue;
+        }
+        foreach (requirement_tokens($signal) as $token) {
+            if (text_contains_requirement_signal($groupText, $token)) {
+                $aliases = array_merge($aliases, $terms);
+                break;
+            }
+        }
+    }
+
+    foreach (skill_options() as $skill) {
+        $skillKey = strtolower($skill);
+        if ($skillKey === $key || str_contains($skillKey, $key) || str_contains($key, $skillKey)) {
+            $aliases[] = $skill;
+        }
+    }
+
+    foreach ($contextSignals as $contextSignal) {
+        $contextKey = strtolower(trim((string) $contextSignal));
+        if ($contextKey !== '' && ($contextKey === $key || str_contains($contextKey, $key) || str_contains($key, $contextKey))) {
+            $aliases[] = (string) $contextSignal;
+        }
+    }
+
+    return normalize_skill_list($aliases);
 }
 
 function candidate_evidence_text(string $candidateText, array $candidateSkills, array $candidateScreen): string
@@ -3698,29 +3749,79 @@ function candidate_evidence_text(string $candidateText, array $candidateSkills, 
         implode(' ', normalize_text_list($candidateScreen['tools'] ?? [])),
         implode(' ', normalize_text_list($candidateScreen['roles'] ?? [])),
         implode(' ', normalize_text_list($candidateScreen['industries'] ?? [])),
+        implode(' ', normalize_text_list($candidateScreen['languages'] ?? [])),
+        implode(' ', normalize_text_list($candidateScreen['certifications'] ?? [])),
+        implode(' ', normalize_text_list($candidateScreen['achievements'] ?? [])),
         implode(' ', education_entry_labels(normalize_education_entries($candidateScreen['education'] ?? []))),
         implode(' ', normalize_text_list($candidateScreen['strengths'] ?? [])),
         (string) ($candidateScreen['summary'] ?? ''),
     ])));
 }
 
-function candidate_matches_requirement(string $signal, string $evidenceText): bool
+function candidate_matches_requirement(string $signal, string $evidenceText, array $contextSignals = []): bool
 {
-    foreach (requirement_aliases($signal) as $alias) {
-        if (text_contains_requirement_signal($evidenceText, $alias)) {
-            return true;
+    return (bool) requirement_match_detail($signal, $evidenceText, $contextSignals)['matched'];
+}
+
+function requirement_match_detail(string $signal, string $evidenceText, array $contextSignals = []): array
+{
+    $signal = trim($signal);
+    $signalKey = strtolower($signal);
+    $aliases = requirement_aliases($signal, $contextSignals);
+    $tokens = requirement_tokens($signal);
+
+    foreach ($aliases as $alias) {
+        if (!text_contains_requirement_signal($evidenceText, $alias)) {
+            continue;
+        }
+        $aliasKey = strtolower($alias);
+        $direct = $aliasKey === $signalKey || text_contains_requirement_signal($aliasKey, $signalKey);
+
+        return [
+            'matched' => true,
+            'requirement' => $signal,
+            'evidence' => $alias,
+            'level' => $direct ? 'direct' : 'related',
+            'weight' => $direct ? 1.0 : 0.78,
+        ];
+    }
+
+    if (count($tokens) >= 2) {
+        $hits = 0;
+        $matchedTokens = [];
+        foreach ($tokens as $token) {
+            if (text_contains_requirement_signal($evidenceText, $token)) {
+                $hits++;
+                $matchedTokens[] = $token;
+            }
+        }
+        $coverage = $hits / max(1, count($tokens));
+        if ($coverage >= 0.65) {
+            return [
+                'matched' => true,
+                'requirement' => $signal,
+                'evidence' => implode(', ', array_slice($matchedTokens, 0, 4)),
+                'level' => 'contextual',
+                'weight' => 0.68,
+            ];
         }
     }
 
-    return false;
+    return [
+        'matched' => false,
+        'requirement' => $signal,
+        'evidence' => '',
+        'level' => 'missing',
+        'weight' => 0.0,
+    ];
 }
 
-function reconcile_requirement_matches(array $signals, array $matches, array $missing, string $evidenceText): array
+function reconcile_requirement_matches(array $signals, array $matches, array $missing, string $evidenceText, array $contextSignals = []): array
 {
     $lookup = array_flip(array_map('strtolower', normalize_skill_list($matches)));
     foreach ($signals as $signal) {
         $key = strtolower($signal);
-        if (!isset($lookup[$key]) && candidate_matches_requirement($signal, $evidenceText)) {
+        if (!isset($lookup[$key]) && candidate_matches_requirement($signal, $evidenceText, $contextSignals)) {
             $matches[] = $signal;
             $lookup[$key] = true;
         }
@@ -5102,6 +5203,11 @@ function clamp_percent(int $score): int
     return max(0, min(100, $score));
 }
 
+function ai_screening_template_version(): int
+{
+    return 6;
+}
+
 function cached_ai_job_match(array $application): ?array
 {
     $stored = decode_cv_ai_json((string) ($application['ai_match_json'] ?? ''));
@@ -5113,7 +5219,7 @@ function cached_ai_job_match(array $application): ?array
     if (($stored['matching_mode'] ?? '') !== $currentMode) {
         return null;
     }
-    if ((int) ($stored['screening_template_version'] ?? 0) < 5) {
+    if ((int) ($stored['screening_template_version'] ?? 0) < ai_screening_template_version()) {
         return null;
     }
 
@@ -5210,7 +5316,7 @@ function openai_cv_job_match(array $application, array $candidateScreen, array $
     $model = openai_cv_model();
     $request = [
         'model' => $model,
-        'instructions' => 'You are a senior technical recruiter. Match the candidate CV to the job requirements using all evidence: skills, tools, responsibilities, seniority, industry context, education, languages, certifications, achievements, and missing signals. Detect experience across all CV fields, including month ranges like Apr 2025-Present, Jan 2025-August 2025, and Oct 2018-Nov 2022. For required years, count months that are relevant to this specific job field and convert them accurately; do not ignore partial-year ranges. Avoid underfitting: count adjacent role-family experience when the same job period contains multiple related signals, for example compliance/risk/operations/leadership for Security Manager, banking/payment/reporting/compliance for Finance, shipped systems/projects/stack for Developer. Do not let clearly unrelated career years satisfy a role-specific experience requirement. Apply the role-specific screening template as hard criteria when present. Score 0-100. Be evidence-based and do not invent facts. ' . $modeInstruction,
+        'instructions' => 'You are a senior technical recruiter. Match the candidate CV to the job requirements using all evidence: skills, tools, responsibilities, seniority, industry context, education, languages, certifications, achievements, and missing signals. Detect experience across all CV fields, including month ranges like Apr 2025-Present, Jan 2025-August 2025, and Oct 2018-Nov 2022. For required years, count months that are relevant to this specific job field and convert them accurately; do not ignore partial-year ranges. Avoid underfitting: count adjacent role-family experience when the same job period contains multiple related signals, for example HR/recruitment/screening/interviewing for HR Officer, management/leadership/coordination for manager roles, compliance/risk/operations/leadership for Security Manager, banking/payment/reporting/compliance for Finance, and shipped systems/projects/stack for Developer. Generalize requirement language: map aliases, abbreviations, adjacent tools, transferable work, education fields, and role-family evidence before deciding a gap. Put a requirement in matched_requirements when evidence is direct or clearly related; explain weak, partial, or uncertain matches in risks instead of marking them missing. Do not let clearly unrelated career years satisfy a role-specific experience requirement. Apply the role-specific screening template as hard criteria when present. Score 0-100. Be evidence-based and do not invent facts. ' . $modeInstruction,
         'input' => [[
             'role' => 'user',
             'content' => [[
@@ -5246,7 +5352,7 @@ function openai_cv_job_match(array $application, array $candidateScreen, array $
         'confidence' => trim((string) ($decoded['confidence'] ?? '')),
         'matching_mode' => $matchingMode,
         'screening_template' => $template['name'] ?? 'General role',
-        'screening_template_version' => 5,
+        'screening_template_version' => ai_screening_template_version(),
         'provider' => 'openai',
         'model' => $model,
     ];
@@ -5339,7 +5445,7 @@ function application_screen_data(array $application): array
     ], $screen);
 }
 
-function hard_requirement_breakdown(array $signals, array $matches, array $missing, array $jobLanguages, array $languageMatches, array $languageMissing, array $jobEducation, array $educationMatches, array $educationMissing, ?int $requiredYears, ?int $candidateYears, array $candidateScreen, array $cvQuality): array
+function hard_requirement_breakdown(array $signals, array $matches, array $missing, array $jobLanguages, array $languageMatches, array $languageMissing, array $jobEducation, array $educationMatches, array $educationMissing, ?int $requiredYears, ?int $candidateYears, array $candidateScreen, array $cvQuality, array $requirementEvidence = []): array
 {
     $items = [];
     foreach ($candidateScreen['template_requirements'] ?? [] as $templateItem) {
@@ -5354,11 +5460,14 @@ function hard_requirement_breakdown(array $signals, array $matches, array $missi
         ];
     }
     foreach (array_slice($matches, 0, 8) as $signal) {
+        $detail = $requirementEvidence[strtolower($signal)] ?? [];
+        $level = (string) ($detail['level'] ?? 'direct');
+        $evidence = trim((string) ($detail['evidence'] ?? ''));
         $items[] = [
             'requirement' => $signal,
             'category' => 'Skill/tool',
             'status' => 'Met',
-            'evidence' => 'Detected in candidate skills or CV screening.',
+            'evidence' => $evidence !== '' ? ucfirst($level) . ' evidence detected: ' . $evidence . '.' : 'Detected in candidate skills or CV screening.',
         ];
     }
     foreach (array_slice($missing, 0, 8) as $signal) {
@@ -5556,6 +5665,7 @@ function match_explanation_html(array $match): string
     $score = (int) ($match['score'] ?? 0);
     $mode = ai_matching_mode_label((string) ($match['matching_mode'] ?? ai_matching_mode()));
     $cvQuality = is_array($match['cv_quality'] ?? null) ? $match['cv_quality'] : [];
+    $requirementEvidence = is_array($match['requirement_evidence'] ?? null) ? $match['requirement_evidence'] : [];
 
     $matchedList = $matches ?: array_map(static fn(array $item): string => (string) ($item['requirement'] ?? ''), array_slice($metHard, 0, 6));
     $gapList = $missing ?: array_map(static fn(array $item): string => (string) ($item['requirement'] ?? ''), array_slice($missingHard, 0, 6));
@@ -5566,7 +5676,11 @@ function match_explanation_html(array $match): string
     if ($matchedList) {
         $html .= '<ul>';
         foreach (array_slice($matchedList, 0, 6) as $item) {
-            $html .= '<li>' . h((string) $item) . '</li>';
+            $detail = $requirementEvidence[strtolower((string) $item)] ?? [];
+            $level = trim((string) ($detail['level'] ?? ''));
+            $evidence = trim((string) ($detail['evidence'] ?? ''));
+            $suffix = ($level !== '' && $evidence !== '') ? ' (' . $level . ': ' . $evidence . ')' : '';
+            $html .= '<li>' . h((string) $item . $suffix) . '</li>';
         }
         $html .= '</ul>';
     } else {
@@ -5716,9 +5830,14 @@ function candidate_match_score(array $application): array
     $candidateEvidenceText = candidate_evidence_text($candidateText, $candidateSkills, $candidateScreen);
     $matches = [];
     $missing = [];
+    $requirementEvidence = [];
+    $weightedCoverage = 0.0;
     foreach ($signals as $signal) {
-        if (candidate_matches_requirement($signal, $candidateEvidenceText)) {
+        $detail = requirement_match_detail($signal, $candidateEvidenceText, $signals);
+        $requirementEvidence[strtolower($signal)] = $detail;
+        if (!empty($detail['matched'])) {
             $matches[] = $signal;
+            $weightedCoverage += (float) ($detail['weight'] ?? 0.0);
         } else {
             $missing[] = $signal;
         }
@@ -5731,11 +5850,11 @@ function candidate_match_score(array $application): array
     $educationHaystack = strtolower(implode(' ', $screenEducationLabels));
     $educationMatches = array_values(array_filter($jobEducation, static fn(string $level): bool => $educationHaystack !== '' && str_contains($educationHaystack, strtolower($level))));
     $educationMissing = array_values(array_diff($jobEducation, $educationMatches));
-    $skillScore = ($candidateSkills && $signals) ? (int) round((count($matches) / max(1, count($signals))) * 100) : 0;
+    $skillScore = ($signals && trim($candidateEvidenceText) !== '') ? (int) round(($weightedCoverage / max(1, count($signals))) * 100) : 0;
     $score = $skillScore;
     $matchingMode = ai_matching_mode();
     $reasons = [];
-    if (!$candidateSkills || !$signals) {
+    if (!$signals || trim($candidateEvidenceText) === '') {
         $reasons[] = 'Add candidate skills, job tags, or readable CV screening data to calculate a stronger local fallback match.';
     } else {
         $reasons[] = $matches ? 'Matched: ' . implode(', ', array_slice($matches, 0, 6)) : 'No required job skills matched yet.';
@@ -5831,7 +5950,8 @@ function candidate_match_score(array $application): array
         $requiredYears,
         $candidateYears,
         $candidateScreen,
-        $cvQuality
+        $cvQuality,
+        $requirementEvidence
     );
 
     $result = [
@@ -5851,6 +5971,7 @@ function candidate_match_score(array $application): array
         'screen_contact_signals' => $candidateScreen['contact_signals'] ?? [],
         'screening_template' => $screeningTemplate['name'] ?? 'General role',
         'template_requirements' => $templateRequirements,
+        'requirement_evidence' => $requirementEvidence,
         'cv_quality' => $cvQuality,
         'total' => count($signals),
         'required_years' => $requiredYears,
@@ -5891,9 +6012,35 @@ function candidate_match_score(array $application): array
         $result['fit_label'] = $aiMatch['fit_label'] !== '' ? $aiMatch['fit_label'] : null;
         $result['matches'] = $aiMatch['matches'] ?: ($aiMatch['matched_requirements'] ?? $matches);
         $result['missing'] = $aiMatch['missing'] ?: ($aiMatch['gaps'] ?? $missing);
-        [$result['matches'], $result['missing']] = reconcile_requirement_matches($signals, $result['matches'], $result['missing'], $candidateEvidenceText);
+        [$result['matches'], $result['missing']] = reconcile_requirement_matches($signals, $result['matches'], $result['missing'], $candidateEvidenceText, $signals);
+        foreach ($result['matches'] as $signal) {
+            $key = strtolower($signal);
+            if (empty($result['requirement_evidence'][$key]['matched'])) {
+                $result['requirement_evidence'][$key] = requirement_match_detail($signal, $candidateEvidenceText, $signals);
+            }
+        }
+        $result['hard_requirements'] = hard_requirement_breakdown(
+            $signals,
+            $result['matches'],
+            $result['missing'],
+            $jobLanguages,
+            $languageMatches,
+            $languageMissing,
+            $jobEducation,
+            $educationMatches,
+            $educationMissing,
+            $requiredYears,
+            $candidateYears,
+            $candidateScreen,
+            $cvQuality,
+            $result['requirement_evidence']
+        );
         if (count($result['matches']) > count($aiMatch['matches'] ?? [])) {
-            $coverageScore = (int) round((count($result['matches']) / max(1, count($signals))) * 100);
+            $coverageWeight = 0.0;
+            foreach ($signals as $signal) {
+                $coverageWeight += (float) ($result['requirement_evidence'][strtolower($signal)]['weight'] ?? 0.0);
+            }
+            $coverageScore = (int) round(($coverageWeight / max(1, count($signals))) * 100);
             $result['score'] = max((int) $result['score'], min(92, $coverageScore));
         }
         $result['reasons'] = $aiReasons ?: $reasons;
