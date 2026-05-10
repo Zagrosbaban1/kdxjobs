@@ -1187,11 +1187,12 @@ if ($pdo && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':cv_ai_json' => $cvScreen['json'] ?? null,
                 ':cv_ai_updated_at' => $role === 'jobseeker' ? date('Y-m-d H:i:s') : null,
             ]);
+            $newUserId = (int) $pdo->lastInsertId();
 
             if ($role === 'company') {
                 $company = $pdo->prepare('INSERT INTO companies (user_id, name, industry, location, verification_status) VALUES (:user_id, :name, :industry, :location, "pending")');
                 $company->execute([
-                    ':user_id' => (int) $pdo->lastInsertId(),
+                    ':user_id' => $newUserId,
                     ':name' => field('company_name'),
                     ':industry' => field('industry'),
                     ':location' => field('location'),
@@ -2829,6 +2830,17 @@ function job_screening_template(array $application): array
                 ['requirement' => 'Data cleaning / analysis', 'category' => 'Analysis', 'keywords' => ['data cleaning', 'data analysis', 'analytics', 'insight'], 'must' => false],
             ],
         ],
+        'hr' => [
+            'name' => 'HR / Recruitment',
+            'patterns' => ['hr officer', 'hr specialist', 'human resources', 'recruiter', 'recruitment', 'talent acquisition'],
+            'criteria' => [
+                ['requirement' => 'HR or recruitment experience', 'category' => 'Domain', 'keywords' => ['hr', 'human resources', 'recruitment', 'recruiter', 'talent acquisition', 'staffing'], 'must' => true],
+                ['requirement' => 'Candidate screening', 'category' => 'Recruitment', 'keywords' => ['screening', 'shortlist', 'shortlisting', 'interview', 'interviewing', 'candidate'], 'must' => true],
+                ['requirement' => 'Communication', 'category' => 'Soft skill', 'keywords' => ['communication', 'communicate', 'coordination', 'presentation', 'stakeholder'], 'must' => true],
+                ['requirement' => 'HR administration', 'category' => 'Operations', 'keywords' => ['onboarding', 'employee records', 'hr administration', 'personnel', 'policy'], 'must' => false],
+                ['requirement' => 'Management awareness', 'category' => 'Management', 'keywords' => ['management', 'leadership', 'team', 'supervision', 'manager'], 'must' => false],
+            ],
+        ],
     ];
 
     foreach ($templates as $template) {
@@ -3642,6 +3654,83 @@ function normalize_text_list(array $values): array
     return array_values(array_filter(array_map(static function ($value): string {
         return trim((string) $value);
     }, $values)));
+}
+
+function text_contains_requirement_signal(string $haystack, string $needle): bool
+{
+    $haystack = strtolower($haystack);
+    $needle = strtolower(trim($needle));
+    if ($haystack === '' || $needle === '') {
+        return false;
+    }
+
+    if (strlen($needle) <= 3) {
+        return (bool) preg_match('/\b' . preg_quote($needle, '/') . '\b/i', $haystack);
+    }
+
+    return str_contains($haystack, $needle);
+}
+
+function requirement_aliases(string $signal): array
+{
+    $key = strtolower(trim($signal));
+    $aliases = [
+        'hr' => ['hr', 'human resources', 'recruitment', 'recruiter', 'talent acquisition', 'staffing', 'employee relations', 'personnel'],
+        'human resources' => ['hr', 'human resources', 'recruitment', 'recruiter', 'talent acquisition', 'staffing', 'employee relations', 'personnel'],
+        'recruitment' => ['recruitment', 'recruiter', 'talent acquisition', 'screening', 'interviewing', 'candidate sourcing'],
+        'screening' => ['screening', 'shortlist', 'shortlisting', 'candidate review', 'interviewing'],
+        'management' => ['management', 'manager', 'managed', 'leadership', 'supervision', 'team lead', 'project management', 'digital transformation management'],
+        'project management' => ['project management', 'management', 'managed project', 'coordination', 'planning'],
+        'communication' => ['communication', 'communicate', 'coordination', 'presentation', 'stakeholder communication'],
+        'excel' => ['excel', 'spreadsheet', 'pivot', 'vlookup', 'xlookup'],
+        'aws' => ['aws', 'amazon web services', 'cloud'],
+    ];
+
+    return array_values(array_unique(array_merge([$signal], $aliases[$key] ?? [])));
+}
+
+function candidate_evidence_text(string $candidateText, array $candidateSkills, array $candidateScreen): string
+{
+    return strtolower(implode(' ', array_filter([
+        $candidateText,
+        implode(' ', $candidateSkills),
+        implode(' ', normalize_text_list($candidateScreen['skills'] ?? [])),
+        implode(' ', normalize_text_list($candidateScreen['tools'] ?? [])),
+        implode(' ', normalize_text_list($candidateScreen['roles'] ?? [])),
+        implode(' ', normalize_text_list($candidateScreen['industries'] ?? [])),
+        implode(' ', education_entry_labels(normalize_education_entries($candidateScreen['education'] ?? []))),
+        implode(' ', normalize_text_list($candidateScreen['strengths'] ?? [])),
+        (string) ($candidateScreen['summary'] ?? ''),
+    ])));
+}
+
+function candidate_matches_requirement(string $signal, string $evidenceText): bool
+{
+    foreach (requirement_aliases($signal) as $alias) {
+        if (text_contains_requirement_signal($evidenceText, $alias)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function reconcile_requirement_matches(array $signals, array $matches, array $missing, string $evidenceText): array
+{
+    $lookup = array_flip(array_map('strtolower', normalize_skill_list($matches)));
+    foreach ($signals as $signal) {
+        $key = strtolower($signal);
+        if (!isset($lookup[$key]) && candidate_matches_requirement($signal, $evidenceText)) {
+            $matches[] = $signal;
+            $lookup[$key] = true;
+        }
+    }
+
+    $matches = normalize_skill_list($matches);
+    $matchLookup = array_flip(array_map('strtolower', $matches));
+    $missing = array_values(array_filter(normalize_skill_list($missing), static fn(string $signal): bool => !isset($matchLookup[strtolower($signal)])));
+
+    return [$matches, $missing];
 }
 
 function normalize_education_entries(array $entries): array
@@ -5624,9 +5713,16 @@ function candidate_match_score(array $application): array
     $candidateScreen['adjacent_experience_keywords'] = $experienceKeywordGroups['adjacent'];
     $candidateScreen['years'] = $candidateYears;
 
-    $candidateLookup = array_flip(array_map('strtolower', $candidateSkills));
-    $matches = array_values(array_filter($signals, static fn(string $signal): bool => isset($candidateLookup[strtolower($signal)])));
-    $missing = array_values(array_filter($signals, static fn(string $signal): bool => !isset($candidateLookup[strtolower($signal)])));
+    $candidateEvidenceText = candidate_evidence_text($candidateText, $candidateSkills, $candidateScreen);
+    $matches = [];
+    $missing = [];
+    foreach ($signals as $signal) {
+        if (candidate_matches_requirement($signal, $candidateEvidenceText)) {
+            $matches[] = $signal;
+        } else {
+            $missing[] = $signal;
+        }
+    }
     $screenLanguages = $candidateScreen['languages'] ?? [];
     $screenEducation = normalize_education_entries($candidateScreen['education'] ?? []);
     $screenEducationLabels = education_entry_labels($screenEducation);
@@ -5795,6 +5891,11 @@ function candidate_match_score(array $application): array
         $result['fit_label'] = $aiMatch['fit_label'] !== '' ? $aiMatch['fit_label'] : null;
         $result['matches'] = $aiMatch['matches'] ?: ($aiMatch['matched_requirements'] ?? $matches);
         $result['missing'] = $aiMatch['missing'] ?: ($aiMatch['gaps'] ?? $missing);
+        [$result['matches'], $result['missing']] = reconcile_requirement_matches($signals, $result['matches'], $result['missing'], $candidateEvidenceText);
+        if (count($result['matches']) > count($aiMatch['matches'] ?? [])) {
+            $coverageScore = (int) round((count($result['matches']) / max(1, count($signals))) * 100);
+            $result['score'] = max((int) $result['score'], min(92, $coverageScore));
+        }
         $result['reasons'] = $aiReasons ?: $reasons;
         $result['ai_provider'] = $aiMatch['provider'] ?? 'openai';
         $result['ai_model'] = $aiMatch['model'] ?? openai_cv_model();
@@ -6531,9 +6632,11 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
         <?php if (!$jobs): ?>
             <div class="card empty-state"><h3>No jobs match these filters</h3><p class="muted">Try clearing a filter or searching a different title, skill, or company.</p></div>
         <?php else: ?>
-	        <div class="grid jobs-grid">
+	        <div class="jobs-list-grid">
                 <?php foreach ($jobs as $job): ?>
+                    <div class="jobs-list-slot">
                     <?php include __DIR__ . '/partials_job_card.php'; ?>
+                    </div>
                 <?php endforeach; ?>
 	        </div>
             <?php jobs_pagination($jobsPage, $jobsTotalPages); ?>
@@ -7022,6 +7125,20 @@ $dashboardMenu = $isUser
 if (!isset($dashboardMenu[$tab])) {
     $tab = array_key_first($dashboardMenu);
 }
+$dashboardIconMap = [
+    'overview' => 'overview',
+    'profile' => 'profile',
+    'applications' => 'applications',
+    'saved' => 'saved',
+    'saved_searches' => 'saved-searches',
+    'post_job' => 'post-job',
+    'blog' => 'blog',
+    'inbox' => 'inbox',
+    'manage' => 'manage',
+    'admins' => 'admins',
+    'statistics' => 'statistics',
+    'settings' => 'settings',
+];
 $tabTitle = $dashboardMenu[$tab] ?? ucfirst(str_replace('_', ' ', $tab));
 $availableSkills = skill_options();
 $chosenSkills = selected_skills($user['skills'] ?? '');
@@ -7035,7 +7152,7 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
             <aside class="card side">
                 <div class="side-user"><?= profile_photo_html($user['profile_photo'] ?? null, (string) $displayName, 'profile-photo side-photo') ?><div><strong><?= h((string) $displayName) ?></strong><br><span class="tiny muted"><?= $isUser ? 'Data Analyst' : ($isCompany ? 'Tech Company' : (is_super_admin() ? 'Super Admin' : 'Recruiter Admin')) ?></span></div></div>
                 <?php foreach ($dashboardMenu as $key => $item): ?>
-                    <a class="side-btn <?= $tab === $key ? 'active' : '' ?>" href="<?= h(app_url($page, ['tab' => $key])) ?>">?? <?= h($item) ?></a>
+                    <a class="side-btn <?= $tab === $key ? 'active' : '' ?>" href="<?= h(app_url($page, ['tab' => $key])) ?>"><span class="side-icon side-icon-<?= h($dashboardIconMap[$key] ?? 'overview') ?>" aria-hidden="true"></span><span><?= h($item) ?></span></a>
                 <?php endforeach; ?>
             </aside>
             <main class="grid dashboard-main">

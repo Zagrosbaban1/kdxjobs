@@ -227,4 +227,43 @@
         .featured-job-slot .job-card .btn{width:100%!important}
         @media(max-width:1100px){.featured-jobs-row{flex-wrap:wrap!important}.featured-job-slot{flex:1 1 calc(50% - 28px)!important;max-width:520px!important}}
         @media(max-width:760px){.featured-jobs-row{display:grid!important;grid-template-columns:1fr!important}.featured-job-slot{max-width:none!important;width:100%!important}}
+        .jobs-explorer{grid-template-columns:minmax(280px,410px) minmax(0,1fr)!important;align-items:start!important}
+        .jobs-explorer>main{display:block!important;min-width:0!important;width:100%!important}
+        .jobs-list-grid{display:grid!important;grid-template-columns:repeat(2,minmax(320px,1fr))!important;gap:28px!important;align-items:stretch!important;justify-items:stretch!important;width:100%!important;margin:0!important;padding:0!important}
+        .jobs-list-slot{display:flex!important;min-width:0!important;width:100%!important;margin:0!important;padding:0!important}
+        .jobs-list-slot .job-card{display:flex!important;flex-direction:column!important;width:100%!important;max-width:none!important;min-width:0!important;height:100%!important;margin:0!important;transform:none!important}
+        .jobs-list-slot .job-card:hover{transform:translateY(-4px)!important}
+        .jobs-list-slot .job-card .tags{margin-top:auto!important;padding-top:18px!important}
+        .jobs-list-slot .job-card .btn{width:100%!important}
+        @media(max-width:1180px){.jobs-explorer{grid-template-columns:1fr!important}.jobs-list-grid{grid-template-columns:repeat(2,minmax(280px,1fr))!important}}
+        @media(max-width:760px){.jobs-list-grid{grid-template-columns:1fr!important}}
+        body.theme-dark .eyebrow,body.theme-dark .pill{border-color:#1e3a5f!important;background:#10233d!important;color:#bae6fd!important}
+        body.theme-dark .career-potential .section-title h2,body.theme-dark .career-potential .section-title p{color:#f8fafc!important}
+        body.theme-dark .career-potential .section-title p:last-child{color:#cbd5e1!important}
+        body.theme-dark .idea-card,body.theme-dark .idea-card:first-child,body.theme-dark .idea-card:nth-child(2),body.theme-dark .idea-card:nth-child(3),body.theme-dark .idea-card.yellow,body.theme-dark .idea-card.pink,body.theme-dark .idea-card.violet{border-color:#1e3a5f!important;background:#111827!important;color:#f8fafc!important;box-shadow:none!important}
+        body.theme-dark .idea-card h3{color:#f8fafc!important}
+        body.theme-dark .idea-card p{color:#cbd5e1!important}
+        body.theme-dark .idea-art{background:#10233d!important;color:#7dd3fc!important}
+        body.theme-dark .idea-art svg{stroke:#7dd3fc!important;opacity:1!important}
+        body.theme-dark .idea-art .fill{fill:#7dd3fc!important}
+        body.theme-dark .journey-card,body.theme-dark .innovation-card{border-color:#1e3a5f!important;background:#111827!important;color:#f8fafc!important;box-shadow:none!important}
+        body.theme-dark .journey-card p,body.theme-dark .innovation-card p{color:#cbd5e1!important}
+        body.theme-dark .innovation-band{border-color:#1e3a5f!important;background:#0b1220!important}
+        .hero{padding-top:8px!important}
+        @media(max-width:760px){.hero{padding-top:10px!important}}
+        .side-btn{grid-template-columns:24px minmax(0,1fr)!important;gap:10px!important}
+        .side-icon{position:relative;display:inline-flex;width:22px;height:22px;min-width:22px;align-items:center;justify-content:center;color:#475569}
+        .side-icon:before,.side-icon:after{content:"";position:absolute;display:block;box-sizing:border-box}
+        .side-btn.active .side-icon,.side-btn:hover .side-icon{color:#075985}
+        .side-icon-profile:before{width:9px;height:9px;top:2px;border:2px solid currentColor;border-radius:999px}.side-icon-profile:after{width:17px;height:9px;bottom:2px;border:2px solid currentColor;border-radius:999px 999px 4px 4px}
+        .side-icon-applications:before{width:15px;height:17px;border:2px solid currentColor;border-radius:4px}.side-icon-applications:after{width:9px;height:2px;background:currentColor;box-shadow:0 5px 0 currentColor;top:7px}
+        .side-icon-post-job:before,.side-icon-manage:before{width:16px;height:13px;bottom:3px;border:2px solid currentColor;border-radius:4px}.side-icon-post-job:after,.side-icon-manage:after{width:8px;height:5px;top:3px;border:2px solid currentColor;border-bottom:0;border-radius:4px 4px 0 0}
+        .side-icon-blog:before{width:16px;height:16px;border:2px solid currentColor;border-radius:4px}.side-icon-blog:after{width:8px;height:2px;background:currentColor;top:7px;box-shadow:0 5px 0 currentColor}
+        .side-icon-inbox:before{width:18px;height:14px;bottom:3px;border:2px solid currentColor;border-radius:4px}.side-icon-inbox:after{width:10px;height:10px;top:5px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(45deg)}
+        .side-icon-admins:before{width:8px;height:8px;left:2px;top:4px;border:2px solid currentColor;border-radius:999px;box-shadow:9px 0 0 -1px currentColor}.side-icon-admins:after{width:19px;height:8px;bottom:3px;border:2px solid currentColor;border-radius:999px 999px 4px 4px}
+        .side-icon-statistics:before{left:3px;bottom:3px;width:3px;height:8px;background:currentColor;box-shadow:6px -5px 0 currentColor,12px -10px 0 currentColor}.side-icon-statistics:after{left:2px;right:2px;bottom:2px;height:2px;background:currentColor}
+        .side-icon-settings:before{width:16px;height:16px;border:2px solid currentColor;border-radius:999px}.side-icon-settings:after{width:6px;height:6px;border:2px solid currentColor;border-radius:999px;background:transparent}
+        .side-icon-overview:before,.side-icon-saved:before,.side-icon-saved-searches:before{width:16px;height:16px;border:2px solid currentColor;border-radius:4px}.side-icon-overview:after{width:4px;height:4px;background:currentColor;box-shadow:6px 0 0 currentColor,0 6px 0 currentColor,6px 6px 0 currentColor}.side-icon-saved:after{width:8px;height:12px;top:4px;border:2px solid currentColor;border-top:0;border-radius:0 0 4px 4px}.side-icon-saved-searches:after{width:8px;height:8px;border:2px solid currentColor;border-radius:999px;right:0;bottom:0}
+        body.theme-dark .side-icon{color:#cbd5e1}
+        body.theme-dark .side-btn.active .side-icon,body.theme-dark .side-btn:hover .side-icon{color:#bae6fd}
     </style>
