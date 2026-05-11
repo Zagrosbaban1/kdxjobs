@@ -1030,7 +1030,7 @@ $deadlineFilter = in_array($deadlineFilter, ['with_deadline', 'no_deadline', 'cl
 $minSalary = max(0, (int) ($_GET['min_salary'] ?? 0));
 $maxSalary = max(0, (int) ($_GET['max_salary'] ?? 0));
 $requestedSort = (string) ($_GET['sort'] ?? 'newest');
-$jobSort = in_array($requestedSort, ['newest', 'oldest', 'salary_high', 'salary_low'], true) ? $requestedSort : 'newest';
+$jobSort = in_array($requestedSort, ['newest', 'oldest', 'salary_high', 'salary_low', 'best_match'], true) ? $requestedSort : 'newest';
 $jobsPage = max(1, (int) ($_GET['jobs_page'] ?? 1));
 $jobsPerPage = min(24, max(6, (int) ($_GET['jobs_per_page'] ?? 12)));
 $jobsTotal = 0;
@@ -2179,6 +2179,9 @@ if ($pdo) {
     $currentUserId = (int) ($currentSessionUser['id'] ?? 0);
     $currentUserRole = (string) ($currentSessionUser['role'] ?? '');
     $currentUserEmail = (string) ($currentSessionUser['email'] ?? '');
+    if ($jobSort === 'best_match' && $currentUserRole !== 'jobseeker') {
+        $jobSort = 'newest';
+    }
 
     $jobSelect = "SELECT j.*, c.name AS company, c.industry, c.user_id AS company_user_id,
                 u.full_name AS recruiter_name,
@@ -2242,7 +2245,7 @@ if ($pdo) {
 
     $jobWhereSql = ' WHERE ' . implode(' AND ', $jobWhere);
     $jobOrderSql = $jobSort === 'oldest' ? ' ORDER BY j.created_at ASC' : ' ORDER BY j.created_at DESC';
-    $needsPhpSalaryPass = $minSalary > 0 || $maxSalary > 0 || in_array($jobSort, ['salary_high', 'salary_low'], true);
+    $needsPhpSalaryPass = $minSalary > 0 || $maxSalary > 0 || in_array($jobSort, ['salary_high', 'salary_low', 'best_match'], true);
 
     $countStmt = $pdo->prepare('SELECT COUNT(DISTINCT j.id)' . $jobFrom . $jobWhereSql);
     $countStmt->execute($jobParams);
@@ -2272,7 +2275,26 @@ if ($pdo) {
             }
             return true;
         }));
-        usort($jobs, static function (array $a, array $b) use ($jobSort): int {
+        usort($jobs, static function (array $a, array $b) use ($jobSort, $currentSessionUser): int {
+            if ($jobSort === 'best_match' && (($currentSessionUser['role'] ?? '') === 'jobseeker')) {
+                $aMatch = smart_job_match($a, $currentSessionUser) ?? ['score' => 0, 'matched_count' => 0, 'location_match' => false];
+                $bMatch = smart_job_match($b, $currentSessionUser) ?? ['score' => 0, 'matched_count' => 0, 'location_match' => false];
+                $scoreCompare = ((int) ($bMatch['score'] ?? 0)) <=> ((int) ($aMatch['score'] ?? 0));
+                if ($scoreCompare !== 0) {
+                    return $scoreCompare;
+                }
+                $evidenceCompare = ((int) ($bMatch['matched_count'] ?? 0)) <=> ((int) ($aMatch['matched_count'] ?? 0));
+                if ($evidenceCompare !== 0) {
+                    return $evidenceCompare;
+                }
+                $locationCompare = ((int) !empty($bMatch['location_match'])) <=> ((int) !empty($aMatch['location_match']));
+                if ($locationCompare !== 0) {
+                    return $locationCompare;
+                }
+
+                return strcmp((string) ($b['created_at'] ?? ''), (string) ($a['created_at'] ?? ''));
+            }
+
             [$aMin, $aMax] = salary_bounds($a['salary'] ?? '');
             [$bMin, $bMax] = salary_bounds($b['salary'] ?? '');
             return match ($jobSort) {
@@ -3453,7 +3475,7 @@ function recommended_jobs_for_user(array $jobs, array $user, array $applications
 
     foreach ($jobs as $job) {
         $jobId = (int) ($job['id'] ?? 0);
-        if (($job['status'] ?? 'active') !== 'active' || in_array($jobId, $appliedJobIds, true) || in_array($jobId, $savedJobIds, true)) {
+        if (job_listing_status($job) !== 'open' || in_array($jobId, $appliedJobIds, true) || in_array($jobId, $savedJobIds, true)) {
             continue;
         }
 
@@ -3464,14 +3486,25 @@ function recommended_jobs_for_user(array $jobs, array $user, array $applications
 
         $job['_recommendation_score'] = (int) $match['score'];
         $job['_recommendation_summary'] = (string) $match['summary'];
-        $job['_recommendation_matched_skills'] = (int) count($match['matched_skills']);
+        $job['_recommendation_reason'] = (string) ($match['reason'] ?? '');
+        $job['_recommendation_next_tip'] = (string) ($match['next_tip'] ?? '');
+        $job['_recommendation_matched_skills'] = (int) ($match['matched_count'] ?? count($match['matched_skills']));
+        $job['_recommendation_missing_skills'] = (int) ($match['missing_count'] ?? count($match['missing_skills'] ?? []));
         $job['_recommendation_location_match'] = (bool) $match['location_match'];
         $ranked[] = $job;
     }
 
     usort($ranked, static function (array $a, array $b): int {
         $scoreCompare = ((int) ($b['_recommendation_score'] ?? 0)) <=> ((int) ($a['_recommendation_score'] ?? 0));
-        return $scoreCompare !== 0 ? $scoreCompare : strcmp((string) ($b['created_at'] ?? ''), (string) ($a['created_at'] ?? ''));
+        if ($scoreCompare !== 0) {
+            return $scoreCompare;
+        }
+        $evidenceCompare = ((int) ($b['_recommendation_matched_skills'] ?? 0)) <=> ((int) ($a['_recommendation_matched_skills'] ?? 0));
+        if ($evidenceCompare !== 0) {
+            return $evidenceCompare;
+        }
+
+        return strcmp((string) ($b['created_at'] ?? ''), (string) ($a['created_at'] ?? ''));
     });
 
     return array_slice($ranked, 0, $limit);
@@ -3525,29 +3558,171 @@ function smart_job_salary_numbers(string $salary): array
     }, $matches[0] ?? []), static fn (float $value): bool => $value > 0));
 }
 
+function job_match_payload(array $job): array
+{
+    return [
+        'job_title' => $job['job_title'] ?? $job['title'] ?? '',
+        'job_requirements' => $job['job_requirements'] ?? $job['requirements'] ?? '',
+        'job_description' => $job['job_description'] ?? $job['description'] ?? '',
+        'job_tags' => $job['job_tags'] ?? $job['tags'] ?? '',
+        'role' => $job['role'] ?? $job['title'] ?? '',
+    ];
+}
+
+function job_semantic_signal_label(string $groupName): string
+{
+    return match ($groupName) {
+        'hr' => 'HR / Recruitment',
+        'customer_service' => 'Customer Service',
+        'bi' => 'Business Intelligence',
+        'it' => 'IT Support',
+        default => ucwords(str_replace('_', ' ', $groupName)),
+    };
+}
+
+function job_semantic_signals_from_text(string $jobText): array
+{
+    $signals = [];
+    $directGroups = array_flip(['hr', 'data', 'finance', 'software', 'it', 'cloud', 'sales', 'marketing', 'security', 'engineering', 'warehouse', 'customer_service', 'bi']);
+
+    foreach (requirement_semantic_groups() as $groupName => $terms) {
+        $groupPhrase = str_replace('_', ' ', (string) $groupName);
+        $groupNameHit = (strlen($groupPhrase) > 2 || $groupName === 'hr')
+            && text_contains_requirement_signal($jobText, $groupPhrase);
+        $hits = 0;
+        foreach ($terms as $term) {
+            if (strlen((string) $term) <= 2 && !in_array(strtolower((string) $term), ['hr', 'ai'], true)) {
+                continue;
+            }
+            if (text_contains_requirement_signal($jobText, $term)) {
+                $hits++;
+            }
+        }
+
+        if (
+            $groupNameHit
+            || $hits >= 2
+            || ($hits >= 1 && isset($directGroups[$groupName]))
+        ) {
+            $signals[] = job_semantic_signal_label((string) $groupName);
+        }
+    }
+
+    return normalize_skill_list($signals);
+}
+
+function job_match_signals_for_job(array $job): array
+{
+    $payload = job_match_payload($job);
+    $jobText = strtolower(strip_tags(implode(' ', [
+        $payload['job_title'] ?? '',
+        $payload['job_requirements'] ?? '',
+        $payload['job_description'] ?? '',
+        $payload['job_tags'] ?? '',
+        $job['industry'] ?? '',
+        $job['type'] ?? '',
+    ])));
+
+    $template = job_screening_template($payload);
+    $signals = array_merge(
+        tags($job),
+        job_template_signals($template),
+        job_semantic_signals_from_text($jobText),
+        detect_languages($jobText),
+        detect_education_levels($jobText)
+    );
+    foreach (skill_options() as $skill) {
+        if ($jobText !== '' && text_contains_requirement_signal($jobText, $skill)) {
+            $signals[] = $skill;
+        }
+    }
+
+    return normalize_skill_list($signals);
+}
+
+function user_screen_data(array $user): array
+{
+    $screen = decode_cv_ai_json((string) ($user['cv_ai_json'] ?? ''));
+    $candidateText = (string) ($user['cv_text'] ?? '');
+    $manualSkills = implode(', ', normalize_skill_list(array_merge(
+        selected_skills($user['skills'] ?? ''),
+        selected_skills($user['cv_ai_skills'] ?? '')
+    )));
+
+    if (!$screen && trim($candidateText) !== '') {
+        $screen = cv_screening_snapshot($candidateText, $manualSkills);
+    }
+
+    if ($screen) {
+        $screen['education'] = normalize_education_entries($screen['education'] ?? []);
+    }
+
+    return array_merge([
+        'skills' => [],
+        'tools' => [],
+        'roles' => [],
+        'industries' => [],
+        'years' => null,
+        'languages' => [],
+        'education' => [],
+        'certifications' => [],
+        'achievements' => [],
+        'contact_signals' => [],
+        'strengths' => [],
+        'warnings' => [],
+        'quality' => null,
+        'summary' => '',
+    ], is_array($screen) ? $screen : []);
+}
+
 function smart_job_match(array $job, ?array $user): ?array
 {
     if (!$user || (($user['role'] ?? '') !== 'jobseeker')) {
         return null;
     }
 
-    $userSkills = selected_skills($user['skills'] ?? '');
+    $candidateScreen = user_screen_data($user);
+    $userSkills = normalize_skill_list(array_merge(
+        selected_skills($user['skills'] ?? ''),
+        selected_skills($user['cv_ai_skills'] ?? ''),
+        normalize_text_list($candidateScreen['skills'] ?? []),
+        normalize_text_list($candidateScreen['tools'] ?? [])
+    ));
+    $candidateText = (string) ($user['cv_text'] ?? '');
+    $candidateEvidenceText = candidate_evidence_text($candidateText, $userSkills, $candidateScreen);
+    $candidateCorpus = trim(implode("\n", array_filter([
+        $candidateText,
+        (string) ($user['cv_ai_summary'] ?? ''),
+        (string) ($candidateScreen['summary'] ?? ''),
+    ])));
     $userLocation = trim((string) ($user['location'] ?? ''));
     $preferredType = trim((string) ($user['preferred_job_type'] ?? $user['job_type'] ?? $user['desired_job_type'] ?? $user['employment_type'] ?? ''));
     $expectedSalaryText = trim((string) ($user['expected_salary'] ?? $user['desired_salary'] ?? $user['salary_expectation'] ?? $user['salary'] ?? ''));
 
-    if (!$userSkills && $userLocation === '' && $preferredType === '' && $expectedSalaryText === '') {
+    if (!$userSkills && trim($candidateEvidenceText) === '' && $userLocation === '' && $preferredType === '' && $expectedSalaryText === '') {
         return null;
     }
 
-    $jobTags = tags($job);
-    $normalizedUserSkills = array_map('strtolower', $userSkills);
+    $jobTags = job_match_signals_for_job($job);
+    $jobPayload = job_match_payload($job);
+    $screeningTemplate = job_screening_template($jobPayload);
+    $requiredYears = job_required_years($jobPayload);
+    $experienceKeywords = job_experience_keywords($jobPayload, $jobTags, $screeningTemplate);
+    $experienceKeywordGroups = job_experience_keyword_groups($screeningTemplate, $experienceKeywords);
+    $roleRelevantMonths = detect_relevant_experience_months($candidateCorpus, $experienceKeywordGroups['strong'], $experienceKeywordGroups['adjacent']);
+    $roleRelevantYears = experience_years_from_months($roleRelevantMonths);
+    $candidateYears = $roleRelevantYears ?? ($candidateScreen['years'] !== null ? (int) $candidateScreen['years'] : null);
     $matchedSkills = [];
     $missingSkills = [];
+    $requirementEvidence = [];
+    $weightedCoverage = 0.0;
 
     foreach ($jobTags as $tag) {
-        if (in_array(strtolower($tag), $normalizedUserSkills, true)) {
+        $detail = requirement_match_detail($tag, $candidateEvidenceText, $jobTags);
+        $requirementEvidence[strtolower($tag)] = $detail;
+        if (!empty($detail['matched'])) {
             $matchedSkills[] = $tag;
+            $weightedCoverage += (float) ($detail['weight'] ?? 0.0);
         } else {
             $missingSkills[] = $tag;
         }
@@ -3555,16 +3730,18 @@ function smart_job_match(array $job, ?array $user): ?array
 
     $score = 0;
     $skillTotal = max(1, count($jobTags));
-    $score += (int) round((count($matchedSkills) / $skillTotal) * 45);
+    $score += (int) round(($weightedCoverage / $skillTotal) * 55);
 
     $jobLocation = strtolower((string) ($job['location'] ?? ''));
     $remoteJob = str_contains($jobLocation, 'remote');
-    $locationMatch = $remoteJob || ($userLocation !== '' && str_contains($jobLocation, strtolower($userLocation)));
-    $score += $locationMatch ? 20 : ($userLocation === '' ? 8 : 0);
+    $userLocationKey = strtolower($userLocation);
+    $locationMatch = $remoteJob || ($userLocationKey !== '' && $jobLocation !== '' && (str_contains($jobLocation, $userLocationKey) || str_contains($userLocationKey, $jobLocation)));
+    $score += $locationMatch ? 15 : ($userLocation === '' ? 6 : 0);
 
-    $jobType = strtolower((string) ($job['type'] ?? ''));
-    $typeMatch = $preferredType !== '' && $jobType !== '' && str_contains($jobType, strtolower($preferredType));
-    $score += $preferredType === '' ? 10 : ($typeMatch ? 15 : 0);
+    $jobType = strtolower(str_replace('-', ' ', (string) ($job['type'] ?? '')));
+    $preferredTypeKey = strtolower(str_replace('-', ' ', $preferredType));
+    $typeMatch = $preferredTypeKey !== '' && $jobType !== '' && (str_contains($jobType, $preferredTypeKey) || str_contains($preferredTypeKey, $jobType));
+    $score += $preferredType === '' ? 7 : ($typeMatch ? 10 : 0);
 
     $salaryNumbers = smart_job_salary_numbers((string) ($job['salary'] ?? ''));
     $expectedNumbers = smart_job_salary_numbers($expectedSalaryText);
@@ -3573,53 +3750,108 @@ function smart_job_match(array $job, ?array $user): ?array
         $expectedSalary = max($expectedNumbers);
         $jobSalaryMax = max($salaryNumbers);
         $salaryMatch = $jobSalaryMax >= ($expectedSalary * .85);
-        $score += $salaryMatch ? 20 : 4;
+        $score += $salaryMatch ? 10 : 3;
     } else {
-        $score += 10;
+        $score += 6;
+    }
+
+    $hasCv = trim((string) ($user['cv_file'] ?? '')) !== '' || trim($candidateText) !== '' || !empty($user['cv_ai_json']);
+    $score += $hasCv ? 10 : 3;
+
+    $experienceMatch = null;
+    if ($requiredYears !== null) {
+        $experienceMatch = $candidateYears !== null && $candidateYears >= $requiredYears;
+        if ($experienceMatch) {
+            $score += 8;
+        } elseif ($candidateYears !== null && $candidateYears > 0) {
+            $score += 3;
+            $score = min($score, 82);
+        } else {
+            $score = min($score, 72);
+        }
     }
 
     $score = max(0, min(100, $score));
     $level = $score >= 75 ? 'high' : ($score >= 50 ? 'medium' : 'low');
-    $summary = $level === 'high' ? 'Strong match' : ($level === 'medium' ? 'Good potential' : 'Needs profile fit');
+    $summary = $level === 'high' ? 'Strong AI fit' : ($level === 'medium' ? 'Good potential' : 'Needs profile fit');
+    $evidenceLabels = [];
+    foreach (array_slice($matchedSkills, 0, 3) as $matchedSkill) {
+        $detail = $requirementEvidence[strtolower($matchedSkill)] ?? [];
+        $evidence = trim((string) ($detail['evidence'] ?? ''));
+        $levelLabel = trim((string) ($detail['level'] ?? ''));
+        $evidenceLabels[] = $evidence !== '' && $levelLabel !== 'direct'
+            ? $matchedSkill . ' via ' . $evidence
+            : $matchedSkill;
+    }
+    $reasonParts = [];
+    if ($evidenceLabels) {
+        $reasonParts[] = 'Matches ' . implode(', ', $evidenceLabels);
+    }
+    if ($locationMatch) {
+        $reasonParts[] = 'location fits';
+    }
+    if ($typeMatch) {
+        $reasonParts[] = 'job type fits';
+    }
+    if ($requiredYears !== null) {
+        $reasonParts[] = $experienceMatch ? 'experience looks aligned' : 'experience needs review';
+    }
+    if (!$reasonParts) {
+        $reasonParts[] = $hasCv ? 'CV reviewed, but stronger requirement evidence is needed' : 'add a CV for deeper matching';
+    }
+    $nextTip = $missingSkills
+        ? 'Improve: ' . implode(', ', array_slice($missingSkills, 0, 2))
+        : 'Profile covers the visible requirements';
 
     return [
         'score' => $score,
         'level' => $level,
         'summary' => $summary,
+        'reason' => implode('; ', $reasonParts),
+        'next_tip' => $nextTip,
         'matched_skills' => array_slice($matchedSkills, 0, 6),
         'missing_skills' => array_slice($missingSkills, 0, 4),
+        'matched_count' => count($matchedSkills),
+        'missing_count' => count($missingSkills),
+        'requirement_evidence' => $requirementEvidence,
         'location_match' => $locationMatch,
         'type_match' => $typeMatch,
         'salary_match' => $salaryMatch,
         'has_salary_signal' => (bool) ($expectedNumbers && $salaryNumbers),
+        'has_cv' => $hasCv,
+        'required_years' => $requiredYears,
+        'candidate_years' => $candidateYears,
+        'experience_match' => $experienceMatch,
         'skill_total' => count($jobTags),
     ];
 }
 
 function job_match_insights(array $job, array $user): array
 {
-    $userSkills = selected_skills($user['skills'] ?? '');
-    $jobTags = tags($job);
-    $normalizedUserSkills = array_map('strtolower', $userSkills);
-    $matchedSkills = [];
-    $missingSkills = [];
-
-    foreach ($jobTags as $tag) {
-        if (in_array(strtolower($tag), $normalizedUserSkills, true)) {
-            $matchedSkills[] = $tag;
-        } else {
-            $missingSkills[] = $tag;
-        }
-    }
+    $match = smart_job_match($job, $user);
+    $userLocation = strtolower(trim((string) ($user['location'] ?? '')));
+    $jobLocation = strtolower((string) ($job['location'] ?? ''));
 
     return [
-        'matched_skills' => array_slice($matchedSkills, 0, 6),
-        'missing_skills' => array_slice($missingSkills, 0, 4),
-        'location_match' => trim((string) ($user['location'] ?? '')) !== ''
-            && str_contains(strtolower((string) ($job['location'] ?? '')), strtolower((string) $user['location'])),
-        'has_cv' => trim((string) ($user['cv_file'] ?? '')) !== '',
+        'matched_skills' => $match['matched_skills'] ?? [],
+        'missing_skills' => $match['missing_skills'] ?? [],
+        'location_match' => (bool) ($match['location_match'] ?? ($userLocation !== '' && str_contains($jobLocation, $userLocation))),
+        'has_cv' => (bool) ($match['has_cv'] ?? trim((string) ($user['cv_file'] ?? '')) !== ''),
         'profile_score' => profile_score($user),
-        'match_score' => smart_job_match($job, $user)['score'] ?? profile_score($user),
+        'match_score' => $match['score'] ?? profile_score($user),
+        'summary' => $match['summary'] ?? 'Profile readiness',
+        'reason' => $match['reason'] ?? '',
+        'next_tip' => $match['next_tip'] ?? '',
+        'level' => $match['level'] ?? 'low',
+        'type_match' => (bool) ($match['type_match'] ?? false),
+        'salary_match' => (bool) ($match['salary_match'] ?? false),
+        'has_salary_signal' => (bool) ($match['has_salary_signal'] ?? false),
+        'required_years' => $match['required_years'] ?? null,
+        'candidate_years' => $match['candidate_years'] ?? null,
+        'experience_match' => $match['experience_match'] ?? null,
+        'matched_count' => (int) ($match['matched_count'] ?? count($match['matched_skills'] ?? [])),
+        'missing_count' => (int) ($match['missing_count'] ?? count($match['missing_skills'] ?? [])),
+        'skill_total' => (int) ($match['skill_total'] ?? 0),
     ];
 }
 
@@ -4737,6 +4969,15 @@ function job_experience_keyword_groups(array $template, array $keywords): array
         $adjacent = [
             'analysis', 'metrics', 'insight', 'forecast', 'business', 'operations', 'cleaning', 'query',
             'monthly', 'quarterly', 'management report',
+        ];
+    } elseif (str_contains($name, 'hr') || str_contains($name, 'recruitment')) {
+        $strong = array_merge($strong, [
+            'hr', 'human resources', 'recruitment', 'recruiter', 'talent acquisition', 'screening',
+            'shortlisting', 'interviewing', 'candidate', 'onboarding', 'employee relations',
+        ]);
+        $adjacent = [
+            'communication', 'coordination', 'administration', 'management', 'records', 'policy',
+            'training', 'staffing', 'people', 'team', 'presentation',
         ];
     }
 
@@ -6501,8 +6742,15 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                         <div class="job-match-list">
                             <span class="<?= $jobMatchInsights['has_cv'] ? 'ok' : '' ?>"><?= $jobMatchInsights['has_cv'] ? 'CV ready' : 'Upload CV before applying' ?></span>
                             <span class="<?= $jobMatchInsights['location_match'] ? 'ok' : '' ?>"><?= $jobMatchInsights['location_match'] ? 'Location match' : 'Check location fit' ?></span>
-                            <span class="<?= $jobMatchInsights['matched_skills'] ? 'ok' : '' ?>"><?= $jobMatchInsights['matched_skills'] ? count($jobMatchInsights['matched_skills']) . ' matching skills' : 'Add matching skills' ?></span>
+                            <span class="<?= $jobMatchInsights['matched_skills'] ? 'ok' : '' ?>"><?= $jobMatchInsights['matched_skills'] ? ((int) ($jobMatchInsights['matched_count'] ?? count($jobMatchInsights['matched_skills']))) . ' matching requirements' : 'Add more CV/profile evidence' ?></span>
+                            <span class="<?= ($jobMatchInsights['type_match'] ?? false) ? 'ok' : '' ?>"><?= ($jobMatchInsights['type_match'] ?? false) ? 'Job type fits' : 'Check job type' ?></span>
+                            <?php if (($jobMatchInsights['experience_match'] ?? null) !== null): ?>
+                                <span class="<?= $jobMatchInsights['experience_match'] ? 'ok' : '' ?>"><?= $jobMatchInsights['experience_match'] ? 'Experience aligned' : 'Experience needs review' ?></span>
+                            <?php endif; ?>
                         </div>
+                        <?php if (!empty($jobMatchInsights['reason'])): ?>
+                            <p class="tiny muted" style="margin:0;line-height:1.45"><?= h((string) $jobMatchInsights['reason']) ?></p>
+                        <?php endif; ?>
                     </div>
                 <?php endif; ?>
                 <div class="tags">
@@ -6543,20 +6791,23 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                         <div class="overview-panel-head"><h3>Your Match</h3><a class="tiny" href="<?= h(app_url('user', ['tab' => 'settings'])) ?>">Improve profile</a></div>
                         <div class="match-skill-grid">
                             <div>
-                                <strong>Matched skills</strong>
+                                <strong>Matched evidence</strong>
                                 <div class="tags">
-                                    <?php if (!$jobMatchInsights['matched_skills']): ?><span class="tag">No exact tag matches yet</span><?php endif; ?>
+                                    <?php if (!$jobMatchInsights['matched_skills']): ?><span class="tag">No clear requirement evidence yet</span><?php endif; ?>
                                     <?php foreach ($jobMatchInsights['matched_skills'] as $skill): ?><span class="tag good"><?= h($skill) ?></span><?php endforeach; ?>
                                 </div>
                             </div>
                             <div>
-                                <strong>Useful skills to add</strong>
+                                <strong>Useful requirements to improve</strong>
                                 <div class="tags">
-                                    <?php if (!$jobMatchInsights['missing_skills']): ?><span class="tag good">You cover the listed tags</span><?php endif; ?>
+                                    <?php if (!$jobMatchInsights['missing_skills']): ?><span class="tag good">You cover the visible requirements</span><?php endif; ?>
                                     <?php foreach ($jobMatchInsights['missing_skills'] as $skill): ?><span class="tag"><?= h($skill) ?></span><?php endforeach; ?>
                                 </div>
                             </div>
                         </div>
+                        <?php if (!empty($jobMatchInsights['next_tip'])): ?>
+                            <p class="tiny muted" style="margin:14px 0 0"><?= h((string) $jobMatchInsights['next_tip']) ?></p>
+                        <?php endif; ?>
                     </section>
                 <?php endif; ?>
                 <section class="job-section-card">
@@ -6767,6 +7018,9 @@ function jobs_table(array $jobs, string $page, string $jobSearch, string $tab = 
                     <?php if ($maxSalary > 0): ?><input type="hidden" name="max_salary" value="<?= h((string) $maxSalary) ?>"><?php endif; ?>
                     <span class="tiny muted">Sort by</span>
                     <select class="select" name="sort" data-auto-submit>
+                        <?php if (($user['role'] ?? '') === 'jobseeker'): ?>
+                            <option value="best_match" <?= $jobSort === 'best_match' ? 'selected' : '' ?>>Best match</option>
+                        <?php endif; ?>
                         <option value="newest" <?= $jobSort === 'newest' ? 'selected' : '' ?>>Newest</option>
                         <option value="oldest" <?= $jobSort === 'oldest' ? 'selected' : '' ?>>Oldest</option>
                         <option value="salary_high" <?= $jobSort === 'salary_high' ? 'selected' : '' ?>>Salary high</option>
@@ -7408,7 +7662,10 @@ $displayName = $isUser ? ($user['full_name'] ?? 'Zagros Baban') : ($isCompany ? 
                                                 <div>
                                                     <strong><?= h($job['title'] ?? 'Job') ?></strong>
                                                     <span><?= h($job['company'] ?? '') ?> - <?= h($job['location'] ?? '') ?></span>
-                                                    <small><?= h($job['_recommendation_summary'] ?? 'Recommended') ?> - <?= h((string) ($job['_recommendation_matched_skills'] ?? 0)) ?> skills matched</small>
+                                                    <small><?= h($job['_recommendation_summary'] ?? 'Recommended') ?> - <?= h((string) ($job['_recommendation_matched_skills'] ?? 0)) ?> requirements matched</small>
+                                                    <?php if (!empty($job['_recommendation_reason'])): ?>
+                                                        <small><?= h((string) $job['_recommendation_reason']) ?></small>
+                                                    <?php endif; ?>
                                                 </div>
                                                 <b><?= h((string) ($job['_recommendation_score'] ?? 0)) ?>%</b>
                                             </a>

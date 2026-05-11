@@ -23,9 +23,13 @@
             <div class="smart-match-copy">
                 <strong><?= h($jobMatchPreview['summary']) ?></strong>
                 <span>
-                    <?= h((string) count($jobMatchPreview['matched_skills'])) ?>/<?= h((string) max(1, (int) $jobMatchPreview['skill_total'])) ?> skills
+                    <?= h((string) ($jobMatchPreview['matched_count'] ?? count($jobMatchPreview['matched_skills']))) ?>/<?= h((string) max(1, (int) $jobMatchPreview['skill_total'])) ?> requirements
+                    &middot; <?= $jobMatchPreview['has_cv'] ? 'CV evidence used' : 'Add CV for deeper match' ?>
                     &middot; <?= $jobMatchPreview['location_match'] ? 'Location fits' : 'Check location' ?>
                 </span>
+                <?php if (!empty($jobMatchPreview['reason'])): ?>
+                    <span><?= h((string) $jobMatchPreview['reason']) ?></span>
+                <?php endif; ?>
             </div>
         </div>
     <?php elseif (($user['role'] ?? '') === 'jobseeker'): ?>
